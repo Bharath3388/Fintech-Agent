@@ -41,56 +41,6 @@ export default function App() {
     }
   }, []);
 
-  const handleAnalyze = useCallback(async () => {
-    if (!csvPaths.length) return;
-    setPhase('running');
-    setProgress([]);
-    setStageStatus({});
-    setResult(null);
-    setError(null);
-
-    try {
-      const resp = await fetch(`${BACKEND}/analyze/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv_paths: csvPaths }),
-      });
-
-      if (!resp.ok) {
-        const err = await resp.text();
-        setError(err);
-        setPhase('upload');
-        return;
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.slice(6);
-            try {
-              const event = JSON.parse(jsonStr);
-              handleSSEEvent(event);
-            } catch { /* skip parse errors */ }
-          }
-        }
-      }
-    } catch (e) {
-      setError(`Connection error: ${e.message}`);
-      setPhase('upload');
-    }
-  }, [csvPaths]);
-
   const handleSSEEvent = useCallback((event) => {
     // Skip Orchestrator for stage tracking (it fires first/last, not a real pipeline stage)
     const isOrchestrator = event.agent === 'Orchestrator';
@@ -166,6 +116,80 @@ export default function App() {
       });
     }
   }, []);
+
+  const handleAnalyze = useCallback(async () => {
+    if (!csvPaths.length) return;
+    setPhase('running');
+    setProgress([]);
+    setStageStatus({});
+    setResult(null);
+    setError(null);
+
+    try {
+      const resp = await fetch(`${BACKEND}/analyze/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv_paths: csvPaths }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        setError(err);
+        setPhase('upload');
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let gotResult = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE events are delimited by double newlines
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          const dataLine = part.split('\n').find(l => l.startsWith('data: '));
+          if (dataLine) {
+            try {
+              const event = JSON.parse(dataLine.slice(6));
+              handleSSEEvent(event);
+              if (event.summary !== undefined && event.metrics !== undefined) {
+                gotResult = true;
+              }
+            } catch { /* skip parse errors */ }
+          }
+        }
+      }
+      // Process any remaining buffer after stream ends
+      if (buffer.trim()) {
+        const dataLine = buffer.split('\n').find(l => l.startsWith('data: '));
+        if (dataLine) {
+          try {
+            const event = JSON.parse(dataLine.slice(6));
+            handleSSEEvent(event);
+            if (event.summary !== undefined && event.metrics !== undefined) {
+              gotResult = true;
+            }
+          } catch { /* skip parse errors */ }
+        }
+      }
+
+      // If stream ended without a result, show an error
+      if (!gotResult) {
+        setError('Pipeline stream ended unexpectedly. Check the backend logs.');
+        setPhase('upload');
+      }
+    } catch (e) {
+      setError(`Connection error: ${e.message}`);
+      setPhase('upload');
+    }
+  }, [csvPaths, handleSSEEvent]);
 
   const handleReset = useCallback(() => {
     setFiles([]);

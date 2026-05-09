@@ -272,8 +272,9 @@ async def analyze_stream(request: AnalyzeRequest):
         loop = asyncio.get_event_loop()
         while True:
             try:
+                # Long timeout: LLM calls can take minutes per metric
                 event = await loop.run_in_executor(
-                    None, lambda: progress_queue.get(timeout=120)
+                    None, lambda: progress_queue.get(timeout=600)
                 )
             except Exception:
                 break
