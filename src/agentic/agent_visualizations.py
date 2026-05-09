@@ -75,39 +75,20 @@ def generate_visualizations(state: AgentState) -> dict:
     all_charts: dict = {}
     all_messages: list[str] = []
 
-    # Generate charts in batches (group small metrics, individual for complex)
-    batch_metrics = {}
-    for mid, mdata in metrics_data.items():
-        batch_metrics[mid] = mdata
-
-    # Try batch generation first
-    step, t0 = log_step_start(AGENT, "Batch chart generation")
-    try:
-        charts = _generate_batch(llm, batch_metrics)
-        all_charts.update(charts)
-        generated = [mid for mid, c in charts.items() if "error" not in c]
-        log_success(AGENT, f"Batch generated {len(generated)} charts: {generated}")
-        log_step_end(AGENT, step, t0, f"{len(generated)} charts")
-    except Exception as e:
-        log_error(AGENT, f"Batch generation failed: {e}")
-        log_step_end(AGENT, step, t0, "FAILED")
-
-    # Retry individual metrics that failed or were missed
-    missing = [mid for mid in metrics_data if mid not in all_charts or "error" in all_charts.get(mid, {})]
-    if missing:
-        step2, t1 = log_step_start(AGENT, f"Individual retry for {len(missing)} metrics")
-        for mid in missing:
-            try:
-                chart = _generate_single(llm, mid, metrics_data[mid])
-                if chart and "error" not in chart:
-                    all_charts[mid] = chart
-                    log_success(AGENT, f"  {mid}: OK (individual)")
-                else:
-                    log_warn(AGENT, f"  {mid}: failed individually")
-            except Exception as e:
-                log_error(AGENT, f"  {mid}: {e}")
-                all_charts[mid] = {"error": str(e)}
-        log_step_end(AGENT, step2, t1)
+    # Generate charts individually for each metric
+    step, t0 = log_step_start(AGENT, f"Individual chart generation for {len(metrics_data)} metrics")
+    for mid in sorted(metrics_data.keys()):
+        try:
+            chart = _generate_single(llm, mid, metrics_data[mid])
+            if chart and "error" not in chart:
+                all_charts[mid] = chart
+                log_success(AGENT, f"  {mid}: OK")
+            else:
+                log_warn(AGENT, f"  {mid}: failed")
+        except Exception as e:
+            log_error(AGENT, f"  {mid}: {e}")
+            all_charts[mid] = {"error": str(e)}
+    log_step_end(AGENT, step, t0)
 
     # Save HTML files locally
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -138,24 +119,6 @@ def generate_visualizations(state: AgentState) -> dict:
 #  Internal helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _generate_batch(llm, metrics_data: dict) -> dict:
-    """Ask LLM to generate Plotly code for all metrics in one shot."""
-    data_summary = _build_data_summary(metrics_data)
-
-    messages = [
-        SystemMessage(content=VIZ_SYSTEM),
-        HumanMessage(content=VIZ_TASK_TEMPLATE.format(
-            metrics_summary=data_summary,
-            metric_ids=", ".join(metrics_data.keys()),
-        )),
-    ]
-
-    response = llm.invoke(messages)
-    code = _extract_code(extract_text(response))
-
-    return _execute_viz_code(code, metrics_data)
-
-
 def _generate_single(llm, metric_id: str, mdata: dict) -> dict | None:
     """Ask LLM to generate Plotly code for a single metric."""
     data_summary = _build_data_summary({metric_id: mdata})
@@ -184,7 +147,7 @@ def _execute_viz_code(code: str, metrics_data: dict) -> dict:
     # Build read-only metric data (no DataFrames, just results)
     clean_data = {}
     for mid, mdata in metrics_data.items():
-        clean_data[mid] = mdata["data"]
+        clean_data[mid] = _sanitize_data(mdata["data"])
 
     exec_namespace = {
         "metrics_data": clean_data,
@@ -262,6 +225,17 @@ def _truncate_for_prompt(data) -> any:
         if len(data) > 50:
             return data[:25] + [{"__truncated__": f"... {len(data) - 25} more items"}]
         return data
+    return data
+
+
+def _sanitize_data(data):
+    """Recursively replace None values with 0 in metric data to avoid comparison errors."""
+    if data is None:
+        return 0
+    if isinstance(data, dict):
+        return {k: _sanitize_data(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_sanitize_data(item) for item in data]
     return data
 
 

@@ -594,9 +594,6 @@ CHART_GENERATORS = {
     "M7": chart_m7,
     "M8": chart_m8,
     "M9": chart_m9,
-    "B1": chart_b1,
-    "B2": chart_b2,
-    "B3": chart_b3,
 }
 
 

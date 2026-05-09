@@ -27,6 +27,82 @@ AGENT = "DataValidation-AI"
 # Module-level DataFrames (avoid serialising in state)
 _dataframes: dict[str, pd.DataFrame] = {}
 
+# ── DPD Bucket Normalisation ──────────────────────────────────────────────
+# Standard 5 buckets: Current | DPD 1-30 | DPD 31-60 | DPD 61-90 | DPD 90+
+_DPD_NORM_MAP = {
+    # Current variants
+    "current":        "Current",
+    "current (dpd 0)":"Current",
+    "standard":       "Current",
+    "0":              "Current",
+    # 1-30 variants
+    "sma-0":                "DPD 1-30",
+    "sma-0 (dpd 1-30)":    "DPD 1-30",
+    "dpd 01-30":            "DPD 1-30",
+    "dpd 1-30":             "DPD 1-30",
+    "1-30":                 "DPD 1-30",
+    # 31-60 variants
+    "sma-1":                "DPD 31-60",
+    "sma-1 (dpd 31-60)":   "DPD 31-60",
+    "dpd 31-60":            "DPD 31-60",
+    "31-60":                "DPD 31-60",
+    # 61-90 variants
+    "sma-2":                "DPD 61-90",
+    "sma-2 (dpd 61-90)":   "DPD 61-90",
+    "dpd 61-90":            "DPD 61-90",
+    "61-90":                "DPD 61-90",
+    # 90+ variants
+    "npa":                  "DPD 90+",
+    "npa (dpd 90+)":        "DPD 90+",
+    "dpd 90+":              "DPD 90+",
+    "dpd 91-180":           "DPD 90+",
+    "dpd 181+":             "DPD 90+",
+    "90+":                  "DPD 90+",
+}
+
+def normalize_dpd_bucket(value):
+    """Map any DPD bucket label to standard 5-bucket classification."""
+    if pd.isna(value):
+        return "Current"
+    return _DPD_NORM_MAP.get(str(value).strip().lower(), str(value).strip())
+
+
+def _normalize_dpd_columns(schema: dict) -> None:
+    """Pre-normalise all DPD bucket columns in loaded DataFrames."""
+    field_mappings = schema.get("field_mappings", {})
+
+    # Collect all DPD bucket column references from schema
+    dpd_fields = ["current_dpd_bucket", "txn_dpd_bucket"]
+    for canonical in dpd_fields:
+        fm = field_mappings.get(canonical)
+        if not fm:
+            continue
+        fname = fm["file"]
+        col = fm["column"]
+        # Find the DataFrame
+        for file_key, df_key in _FILE_ROLE_TO_DF.items():
+            if schema.get(file_key) == fname and df_key in _dataframes:
+                df = _dataframes[df_key]
+                if col in df.columns:
+                    log_info(AGENT, f"Normalising DPD buckets: {df_key}.{col}")
+                    before = df[col].nunique()
+                    df[col] = df[col].apply(normalize_dpd_bucket)
+                    after = df[col].nunique()
+                    log_info(AGENT, f"  {before} unique → {after} unique: {sorted(df[col].unique())}")
+                break
+
+    # Also normalise any column named *dpd_bucket* that wasn't in schema
+    for df_key, df in _dataframes.items():
+        for col in df.columns:
+            if "dpd_bucket" in col.lower() and df[col].dtype == "object":
+                vals = df[col].unique()
+                # Check if already normalised
+                standard = {"Current", "DPD 1-30", "DPD 31-60", "DPD 61-90", "DPD 90+"}
+                if not set(str(v) for v in vals if pd.notna(v)).issubset(standard):
+                    log_info(AGENT, f"Normalising extra DPD column: {df_key}.{col}")
+                    df[col] = df[col].apply(normalize_dpd_bucket)
+
+
 # Map file role keys to DataFrame keys
 _FILE_ROLE_TO_DF = {
     "loan_file": "loans",
@@ -94,6 +170,9 @@ def load_and_validate(state: AgentState) -> dict:
             "errors": ["No data files could be loaded"],
             "messages": [f"[{AGENT}] ERROR: No data loaded"],
         }
+
+    # ── Normalise DPD bucket columns to standard 5-bucket labels ──────
+    _normalize_dpd_columns(schema)
 
     # Convenience references (may be None)
     loans = _dataframes.get("loans")

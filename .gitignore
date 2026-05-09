@@ -5,3 +5,5 @@ __pycache__/
 # Large files exceeding GitHub's 100MB limit
 Large data set/transactions.csv
 Medium Size data Set/04_Payment_Schedule_Transactions.csv
+uploads/
+output_charts/

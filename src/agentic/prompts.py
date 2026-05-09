@@ -110,9 +110,6 @@ AVAILABLE METRICS TO ASSESS COMPUTABILITY:
 - M4: CE by DPD Bucket (needs: scheduled_emi, actual_total_paid, txn_dpd_bucket — from transaction file)
 - M5-M8: DPD Transition Matrices (needs: txn_dpd_bucket, closing_pos, txn_loan_id, observation_month — from transaction file)
 - M9: Vintage Cohort Repayment (needs: disbursement_date, actual_principal_paid, disbursed_amount — from loan+transaction)
-- B1: Borrower Demographics Summary (needs: borrower demographics fields — from borrower file)
-- B2: Credit Profile Analysis (needs: cibil_score, income, risk fields — from borrower file)
-- B3: Risk Segmentation Analysis (needs: risk_category, cibil_score, income — from borrower file)
 
 Respond with ONLY this JSON structure:
 {{
@@ -205,11 +202,10 @@ You understand Indian NBFC portfolio analytics:
 - Standard 5 DPD buckets: Current | DPD 1-30 | DPD 31-60 | DPD 61-90 | DPD 90+
 
 DPD bucket normalisation rules:
-- "Current", "Current (DPD 0)", "Standard", "0" → "Current"
-- "SMA-0", "DPD 01-30", "DPD 1-30", "1-30" → "DPD 1-30"
-- "SMA-1", "DPD 31-60", "31-60" → "DPD 31-60"
-- "SMA-2", "DPD 61-90", "61-90" → "DPD 61-90"
-- "NPA", "DPD 90+", "DPD 91-180", "DPD 181+", "90+" → "DPD 90+"
+- DPD bucket columns are PRE-NORMALISED to exactly 5 standard labels:
+  "Current", "DPD 1-30", "DPD 31-60", "DPD 61-90", "DPD 90+"
+- Do NOT apply your own normalisation — just use these labels directly.
+- A helper function normalize_dpd_bucket(value) is available in your namespace if needed.
 
 Active loan statuses: Active, Live, Regular, Running, Open, Disbursed, NPA
 Closed statuses: Closed, Fully Paid, Settled, Matured, Prepaid
@@ -326,63 +322,6 @@ Generate Python code that:
 Return ONLY executable Python code, no markdown fences."""
 
 
-# ─── Borrower Analytics Metrics (when only borrower data available) ───
-
-METRIC_TASK_B1 = """Compute B1: Borrower Demographics Summary
-
-Schema mapping:
-{schema_mapping}
-
-Generate Python code that analyses the borrower dataset and computes:
-1. Total borrower count
-2. Gender distribution (count and %)
-3. Age distribution (mean, median, min, max)
-4. Top 10 states by borrower count
-5. Top 10 cities by borrower count
-6. Employment type distribution
-7. Borrower type distribution (Individual/Corporate)
-Store in dict 'result'. Use whichever DataFrame has the borrower data (could be loans_df, extra_dfs["borrowers"], etc.).
-If needed data is missing, set result = {{"error": "not_computable", "reason": "..."}}.
-
-Return ONLY executable Python code, no markdown fences."""
-
-
-METRIC_TASK_B2 = """Compute B2: Credit Profile Analysis
-
-Schema mapping:
-{schema_mapping}
-
-Generate Python code that analyses borrower credit profiles:
-1. CIBIL score distribution (mean, median, buckets: <600, 600-700, 700-750, 750-800, 800+)
-2. Income distribution (mean, median, quartiles)
-3. Existing obligations summary
-4. Number of active loans distribution
-5. Risk category distribution
-6. Customer segment distribution
-Store in dict 'result'. Use whichever DataFrame has the data.
-If needed data is missing, set result = {{"error": "not_computable", "reason": "..."}}.
-
-Return ONLY executable Python code, no markdown fences."""
-
-
-METRIC_TASK_B3 = """Compute B3: Risk Segmentation Analysis
-
-Schema mapping:
-{schema_mapping}
-
-Generate Python code that:
-1. Cross-tabulates risk_category vs customer_segment (if available)
-2. Computes average CIBIL score per risk category
-3. Computes average income per risk category
-4. Identifies high-risk borrower characteristics
-5. DPD history analysis (highest_dpd_last_24_months distribution, if available)
-6. Derogatory marks analysis (if available)
-Store in dict 'result'. Use whichever DataFrame has the data.
-If needed data is missing, set result = {{"error": "not_computable", "reason": "..."}}.
-
-Return ONLY executable Python code, no markdown fences."""
-
-
 # Map metric IDs to their prompts
 METRIC_PROMPTS = {
     "M1": ("Portfolio Summary Table", METRIC_TASK_M1),
@@ -391,9 +330,6 @@ METRIC_PROMPTS = {
     "M4": ("CE by DPD Bucket", METRIC_TASK_M4),
     "M5_M8": ("DPD Transition Matrices", METRIC_TASK_M5_M8),
     "M9": ("Repayment by Cohort", METRIC_TASK_M9),
-    "B1": ("Borrower Demographics Summary", METRIC_TASK_B1),
-    "B2": ("Credit Profile Analysis", METRIC_TASK_B2),
-    "B3": ("Risk Segmentation Analysis", METRIC_TASK_B3),
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -432,7 +368,8 @@ CHART TYPE GUIDELINES:
   Show bucket names on Y, POS values on X, annotate with percentage.
   Format values in ₹ Crores.
 - M3 (Collections Efficiency Time Series): Line chart with filled area.
-  X = month, Y = CE%. Add a dashed 100% target line.
+  X = month/period (discover the key name dynamically from the time_series list items),
+  Y = CE%. Add a dashed 100% target line. Filter out entries where CE% is 0 or missing.
 - M4 (CE by DPD Bucket): Vertical bar chart.
   Color bars by bucket (green→red). Annotate CE% values on top.
 - M5/M6/M7/M8 (Transition Matrices): go.Heatmap with text annotations.
@@ -441,18 +378,20 @@ CHART TYPE GUIDELINES:
 - M9 (Vintage Cohort Curves): Multi-line chart.
   Each cohort = one line. X = MOB, Y = cumulative repayment %.
   Use viridis-like color progression. Add legend.
-- B1 (Demographics): Subplots — pie chart for gender, bar charts for
-  employment type, top states, borrower type.
-- B2 (Credit Profile): Bar charts for CIBIL distribution, risk category,
-  customer segment. Use risk-colored bars where applicable.
-- B3 (Risk Segmentation): Bar charts for avg CIBIL by risk, DPD history.
 
 DATA HANDLING RULES:
 - metrics_data[metric_id] is the raw result dict. Inspect its keys dynamically.
+- NEVER assume specific key names — always print(list(data.keys())) first, then adapt.
+  For time series data (M3), the month field might be called 'month', 'observation_month',
+  'period', 'date', etc. Check dynamically: look for keys containing 'month', 'date', 'period'.
+  For list-of-dicts, inspect the first item's keys to discover field names.
 - Values may be nested dicts like {key: {count: N, percentage: P}} — extract the
   numeric value (prefer 'count' for bar charts, 'percentage' for pies).
 - Lists of dicts: iterate to extract labels and values.
 - Always handle missing keys gracefully with .get() defaults.
+- Numeric values may be 0 (sanitized from None) — handle zeros gracefully in charts.
+- Before sorting any list by a numeric field, filter out non-numeric values:
+  e.g. [x for x in items if isinstance(x.get('value'), (int, float))]
 - If a metric's data is empty or unexpected, skip it (don't crash).
 - For large vintage data with many cohorts (>15), only plot representative ones.
 
@@ -472,8 +411,8 @@ VIZ_TASK_TEMPLATE = """Below is the computed metric data. Generate Plotly code f
 {metrics_summary}
 
 IMPORTANT:
-- Write ONE code block that generates ALL the charts listed above.
-- For each metric, set result["<metric_id>"] = fig
+- Write ONE code block that generates the chart for this metric.
+- Set result["<metric_id>"] = fig
 - Only use data from metrics_data dict (already provided in your namespace).
 - Handle nested data structures robustly.
 - Do NOT import anything — go, px, pd, np, json are already in scope.

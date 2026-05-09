@@ -22,6 +22,7 @@ from agentic.llm_config import get_llm, extract_text
 from agentic.prompts import METRIC_SYSTEM, METRIC_PROMPTS
 from agentic.agent_validation import get_dataframes
 from langchain_core.messages import SystemMessage, HumanMessage
+from agentic.agent_validation import normalize_dpd_bucket as _normalize_dpd_bucket
 from core.logger import (
     log_banner, log_step_start, log_step_end, log_step_fail,
     log_info, log_warn, log_error, log_success, log_data,
@@ -127,6 +128,7 @@ def compute_metrics(state: AgentState) -> dict:
                 "datetime": datetime,
                 "result": None,
                 "print": _make_agent_print(AGENT),
+                "normalize_dpd_bucket": _normalize_dpd_bucket,
             }
 
             exec(generated_code, exec_namespace)
@@ -142,16 +144,31 @@ def compute_metrics(state: AgentState) -> dict:
                         llm_insight="Code ran but produced no result",
                     )
             else:
-                # ── Ask LLM to interpret results ──────────────────────
-                insight = _get_llm_insight(llm, metric_name, result_data)
-
-                for mid in metric_ids:
-                    metrics[mid] = MetricResultItem(
-                        metric_id=mid, name=metric_name,
-                        status="ok", data=result_data,
-                        llm_insight=insight,
-                    )
-                    log_success(AGENT, f"{mid} — {metric_name}: OK")
+                # ── Check if result has per-metric sub-keys ───────────
+                if isinstance(result_data, dict) and all(mid in result_data for mid in metric_ids):
+                    # Per-metric results (e.g. B1_B2_B3 returns {"B1": {...}, "B2": {...}, "B3": {...}})
+                    insight = _get_llm_insight(llm, metric_name, result_data)
+                    for mid in metric_ids:
+                        sub_data = result_data[mid]
+                        sub_status = "ok"
+                        if isinstance(sub_data, dict) and "error" in sub_data:
+                            sub_status = "not_available"
+                        metrics[mid] = MetricResultItem(
+                            metric_id=mid, name=metric_name,
+                            status=sub_status, data=sub_data,
+                            llm_insight=insight,
+                        )
+                        log_success(AGENT, f"{mid} — {metric_name}: {sub_status.upper()}")
+                else:
+                    # Single result for all metric_ids (e.g. M5_M8)
+                    insight = _get_llm_insight(llm, metric_name, result_data)
+                    for mid in metric_ids:
+                        metrics[mid] = MetricResultItem(
+                            metric_id=mid, name=metric_name,
+                            status="ok", data=result_data,
+                            llm_insight=insight,
+                        )
+                        log_success(AGENT, f"{mid} — {metric_name}: OK")
 
                 log_info(AGENT, f"LLM Insight: {insight[:200]}")
 
@@ -171,14 +188,27 @@ def compute_metrics(state: AgentState) -> dict:
                                      loans_df, txns_df, extra_dfs, AGENT, metric_name)
 
             if fixed is not None:
-                for mid in metric_ids:
-                    insight = _get_llm_insight(llm, metric_name, fixed)
-                    metrics[mid] = MetricResultItem(
-                        metric_id=mid, name=metric_name,
-                        status="ok", data=fixed,
-                        llm_insight=insight,
-                    )
-                    log_success(AGENT, f"{mid} — {metric_name}: OK (after retry)")
+                insight = _get_llm_insight(llm, metric_name, fixed)
+                if isinstance(fixed, dict) and all(mid in fixed for mid in metric_ids):
+                    for mid in metric_ids:
+                        sub_data = fixed[mid]
+                        sub_status = "ok"
+                        if isinstance(sub_data, dict) and "error" in sub_data:
+                            sub_status = "not_available"
+                        metrics[mid] = MetricResultItem(
+                            metric_id=mid, name=metric_name,
+                            status=sub_status, data=sub_data,
+                            llm_insight=insight,
+                        )
+                        log_success(AGENT, f"{mid} — {metric_name}: {sub_status.upper()} (after retry)")
+                else:
+                    for mid in metric_ids:
+                        metrics[mid] = MetricResultItem(
+                            metric_id=mid, name=metric_name,
+                            status="ok", data=fixed,
+                            llm_insight=insight,
+                        )
+                        log_success(AGENT, f"{mid} — {metric_name}: OK (after retry)")
                 log_step_end(AGENT, step, t0, "OK (retried)")
                 all_messages.append(f"[{AGENT}] {metric_key}: OK (after self-correction)")
             else:
@@ -327,6 +357,7 @@ def _retry_with_fix(llm, prompt_template, schema_text, original_code,
             "datetime": datetime,
             "result": None,
             "print": _make_agent_print(agent_name),
+            "normalize_dpd_bucket": _normalize_dpd_bucket,
         }
 
         exec(fixed_code, exec_namespace)
