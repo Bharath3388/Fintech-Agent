@@ -178,6 +178,7 @@ def run_pipeline(csv_paths: list[str]):
         "data_loaded": False,
         "validation": None,
         "metrics": {},
+        "charts": {},
         "messages": [],
         "errors": [],
     }

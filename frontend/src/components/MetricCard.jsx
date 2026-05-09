@@ -17,11 +17,17 @@ export default function MetricCard({ metric, chart }) {
   // Build a self-contained HTML document for the iframe
   const chartHtml = useMemo(() => {
     if (!hasChart) return null;
+    // Strip integrity/crossorigin attrs so Plotly CDN loads in sandboxed iframe
+    const snippet = chart.html_snippet
+      .replace(/\s*integrity="[^"]*"/g, '')
+      .replace(/\s*crossorigin="[^"]*"/g, '')
+      .replace(/width:\s*\d+px/g, 'width:100%');
     return `<!DOCTYPE html>
 <html><head>
-<style>body{margin:0;background:#1a1a2e;overflow:hidden}
-.js-plotly-plot{width:100%!important}</style>
-</head><body>${chart.html_snippet}</body></html>`;
+<style>body{margin:0;padding:0;background:#1a1a2e;overflow:auto}
+.js-plotly-plot,.plot-container{width:100%!important}
+.svg-container{width:100%!important}</style>
+</head><body>${snippet}</body></html>`;
   }, [chart, hasChart]);
 
   // Reason for non-computable metrics
