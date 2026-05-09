@@ -1,71 +1,84 @@
 # Fintech-Agent — AI-Powered Loan Portfolio Analytics
 
-An **agentic workflow** built with **Google Gemini + LangChain + LangGraph** that autonomously analyses loan portfolio CSV data from Indian NBFCs. Instead of hard-coded rules, an LLM reasons about your data — classifying files, mapping columns, validating quality, and generating Python code to compute financial metrics.
+A full-stack agentic application that autonomously analyses loan portfolio CSV data from Indian NBFCs. Upload your CSVs through a React web UI, watch real-time agent progress via Server-Sent Events, and get computed financial metrics with interactive Plotly charts — all powered by **Google Gemini + LangGraph**.
 
-## Architecture
+## What It Does
+
+1. **Upload CSVs** via the React frontend (drag-and-drop or file picker)
+2. **AI agents** autonomously discover file schemas, validate data quality, compute financial metrics, and generate visualisations — no manual column mapping needed
+3. **Real-time progress** is streamed to the browser as each agent stage completes
+4. **Results dashboard** displays computed metrics and interactive Plotly charts
+
+## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        LangGraph State Graph                        │
-│                                                                     │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐   │
-│  │ discover_    │───▶│ map_schema   │───▶│ load_and_validate    │   │
-│  │ files        │    │ (Gemini LLM) │    │ (Gemini LLM)         │   │
-│  └──────────────┘    └──────────────┘    └──────────┬───────────┘   │
-│                                                     │               │
-│                                          ┌──────────▼───────────┐   │
-│                                          │ Conditional Edge     │   │
-│                                          │ proceed / halt       │   │
-│                                          └───┬─────────────┬────┘   │
-│                                              │             │        │
-│                                    ┌─────────▼──┐    ┌─────▼─────┐  │
-│                                    │ compute_   │    │   halt    │  │
-│                                    │ metrics    │    │ pipeline  │  │
-│                                    │(Gemini LLM)│    └───────────┘  │
-│                                    └─────────┬──┘                   │
-│                                              │                      │
-│                                    ┌─────────▼──────┐               │
-│                                    │ final_report   │               │
-│                                    └────────────────┘               │
-└─────────────────────────────────────────────────────────────────────┘
+Browser (React + Vite)
+        │  upload CSVs  /api/upload
+        │  stream SSE   /api/analyze/stream
+        ▼
+FastAPI Backend  (src/api.py)
+        │
+        ▼
+LangGraph State Machine
+  ┌─────────────────────────────────────────────────────┐
+  │  discover_files → map_schema → load_and_validate   │
+  │                                    │               │
+  │                          ┌─────────▼──────────┐   │
+  │                          │  proceed / halt?   │   │
+  │                          └────┬──────────┬────┘   │
+  │                               │          │        │
+  │                    ┌──────────▼──┐   ┌───▼──────┐ │
+  │                    │compute_     │   │  halt    │ │
+  │                    │metrics      │   │ pipeline │ │
+  │                    └──────────┬──┘   └──────────┘ │
+  │                               │                   │
+  │                    ┌──────────▼──┐                │
+  │                    │ visualise   │                │
+  │                    └──────────┬──┘                │
+  │                               │                   │
+  │                    ┌──────────▼──┐                │
+  │                    │final_report │                │
+  │                    └─────────────┘                │
+  └─────────────────────────────────────────────────────┘
 ```
 
 ### Agent Nodes
 
-| Node | What it does | LLM Role |
-|------|-------------|----------|
-| **discover_files** | Scans directory for CSVs, reads 500-row samples, profiles columns/dtypes/nulls | — (data only) |
-| **map_schema** | Sends file profiles to Gemini | LLM classifies file domains (loan/txn/borrower/…), maps columns to canonical fields, assesses which metrics are computable |
-| **load_and_validate** | Loads full CSVs, computes quality stats (nulls, ranges, distributions, referential integrity) | LLM reviews stats and decides pass/fail with error/warning details |
-| **compute_metrics** | For each computable metric, sends schema to Gemini | LLM generates Python/pandas code per metric; code is executed on loaded DataFrames; if it fails, LLM self-corrects |
-| **final_report** | Prints summary of all results | — |
+| Node | What it does |
+|------|-------------|
+| **discover_files** | Scans uploaded CSVs, reads 500-row samples, profiles columns/dtypes/nulls |
+| **map_schema** | Gemini classifies each file's domain (loan/txn/borrower/…), maps columns to canonical fields, identifies computable metrics |
+| **load_and_validate** | Loads full CSVs, computes quality stats (nulls, ranges, referential integrity); Gemini decides pass / warn / halt |
+| **compute_metrics** | Gemini generates pandas code per metric; code executes on live DataFrames; self-corrects on failure |
+| **visualise** | Generates interactive Plotly HTML charts for each computed metric |
+| **final_report** | Aggregates all results into a structured JSON response |
 
 ## Supported Metrics
 
-### Portfolio Metrics (require loan + transaction data)
+### Portfolio Metrics
 
-| ID | Metric | Required Data |
-|----|--------|---------------|
-| M1 | Portfolio Summary (POS, Active Count, Wtd Avg Rate/Tenor) | Loan file |
-| M2 | POS by DPD Bucket | Loan file |
-| M3 | Collections Efficiency Time Series | Transaction file |
-| M4 | CE% by DPD Bucket | Transaction file |
-| M5–M8 | DPD Transition Matrices (POS & Count, INR & %) | Transaction file |
-| M9 | Vintage Cohort Repayment | Loan + Transaction files |
+| ID | Metric |
+|----|--------|
+| M1 | Portfolio Summary — POS, active count, weighted avg rate & tenor |
+| M2 | POS by DPD Bucket |
+| M3 | Collections Efficiency Time Series |
+| M4 | CE% by DPD Bucket |
+| M5–M8 | DPD Transition Matrices (POS & Count, INR & %) |
+| M9 | Vintage Cohort Repayment |
 
-### Borrower Metrics (work with borrower data alone)
+### Borrower Metrics
 
-| ID | Metric | Required Data |
-|----|--------|---------------|
-| B1 | Borrower Demographics Summary | Borrower file |
-| B2 | Credit Profile Analysis | Borrower file |
-| B3 | Risk Segmentation Analysis | Borrower file |
+| ID | Metric |
+|----|--------|
+| B1 | Borrower Demographics Summary |
+| B2 | Credit Profile Analysis |
+| B3 | Risk Segmentation Analysis |
 
-> The LLM decides which metrics are feasible based on what files/columns you provide. Missing data is handled gracefully — non-computable metrics are skipped with a reason.
+> The LLM decides which metrics are feasible based on the files and columns you provide. Non-computable metrics are skipped with a reason.
 
 ## Setup
 
-### 1. Clone & install
+### 1. Clone & install Python dependencies
 
 ```bash
 cd Fintech-Agent/src
@@ -76,68 +89,99 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env and paste your Gemini API key
+# Edit .env and set your Gemini API key
 # Get one from: https://aistudio.google.com/apikey
 ```
 
-### 3. Run
+### 3. Start the backend
 
 ```bash
-# With a directory of CSVs
-python run_agentic.py "../Large data set/"
+cd src
+uvicorn api:app --reload --port 8000
+```
 
-# With a single CSV file
+### 4. Start the frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Opens at http://localhost:5173
+```
+
+### 5. CLI usage (no frontend needed)
+
+```bash
+cd src
+python run_agentic.py "../Medium Size data Set/"
 python run_agentic.py "../Medium Size data Set/01_Borrowers.csv"
 ```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/upload` | Upload one or more CSV files; returns saved paths |
+| `POST` | `/analyze` | Run full pipeline; returns JSON result |
+| `POST` | `/analyze/stream` | Run pipeline with SSE progress events + final result |
+| `GET` | `/health` | Liveness check |
 
 ## Project Structure
 
 ```
-src/
-├── run_agentic.py              # Entry point — accepts file or directory
-├── requirements.txt            # Python dependencies
-├── agentic/
-│   ├── __init__.py
-│   ├── llm_config.py           # Gemini LLM configuration (model, API key)
-│   ├── state.py                # LangGraph TypedDict state definitions
-│   ├── prompts.py              # All prompt templates (schema, validation, metrics)
-│   ├── agent_schema.py         # Schema Discovery Agent (file profiling + LLM mapping)
-│   ├── agent_validation.py     # Data Validation Agent (quality stats + LLM assessment)
-│   ├── agent_metrics.py        # Metric Computation Agent (LLM code generation + execution)
-│   └── graph.py                # LangGraph StateGraph wiring + orchestration
-├── core/
-│   └── logger.py               # Structured terminal logging with colours
-.env.example                    # API key template
-.gitignore                      # Ignores .env, __pycache__
-docs/                           # Domain knowledge documentation
+Fintech-Agent/
+├── src/
+│   ├── api.py                  # FastAPI app — upload, analyze, SSE streaming
+│   ├── run_agentic.py          # CLI entry point
+│   ├── requirements.txt
+│   ├── agentic/
+│   │   ├── graph.py            # LangGraph StateGraph wiring
+│   │   ├── state.py            # TypedDict state definitions
+│   │   ├── agent_schema.py     # Schema Discovery agent
+│   │   ├── agent_validation.py # Data Validation agent
+│   │   ├── agent_metrics.py    # Metric Computation agent (LLM code-gen)
+│   │   ├── agent_visualizations.py  # Plotly chart generation
+│   │   ├── charts.py           # Chart helpers
+│   │   ├── llm_config.py       # Gemini model config
+│   │   └── prompts.py          # All LLM prompt templates
+│   └── core/
+│       ├── models.py           # Pydantic models
+│       ├── field_definitions.py
+│       └── logger.py           # Coloured terminal logger
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx             # Main app — upload → stream → results
+│   │   ├── components/
+│   │   │   ├── UploadArea.jsx      # Drag-and-drop CSV upload
+│   │   │   ├── ProgressTracker.jsx # Live SSE stage progress
+│   │   │   ├── ResultsDashboard.jsx# Metrics + chart display
+│   │   │   └── MetricCard.jsx      # Individual metric card
+│   │   └── index.css
+│   ├── package.json
+│   └── vite.config.js          # Proxies /api → localhost:8000
+├── docs/                       # Domain knowledge & architecture docs
+├── output_charts/              # Generated Plotly HTML charts
+├── uploads/                    # Uploaded CSV storage
+├── .env.example
+└── .gitignore
 ```
-
-## How It Works
-
-1. **You provide CSV(s)** — one file or a full directory. The agent handles any count.
-
-2. **Schema Discovery Agent** profiles each CSV (columns, types, samples, nulls) and sends the profile to **Gemini**, which reasons about:
-   - What domain each file belongs to (loan, transaction, borrower, collateral, collections)
-   - Which column maps to which canonical field (e.g. `prin_outstanding` → `current_pos`)
-   - Which metrics are computable given the available data
-
-3. **Validation Agent** loads the full data, computes quality statistics (null rates, value ranges, DPD distributions, referential integrity), and sends them to **Gemini** for assessment. The LLM decides whether to proceed, proceed with caution, or halt.
-
-4. **Metric Computation Agent** iterates over computable metrics. For each one, it sends the schema mapping + metric definition to **Gemini**, which **generates executable Python/pandas code**. The code runs on the loaded DataFrames. If execution fails, the LLM reviews the error and generates a fix (self-correction). After computation, the LLM also interprets the results.
-
-5. **Final Report** summarises all results, LLM insights, and agent activity.
 
 ## Configuration
 
-| Env Variable | Default | Description |
-|-------------|---------|-------------|
-| `GOOGLE_API_KEY` | — | Required. Gemini API key |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Model to use |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOOGLE_API_KEY` | — | Required — Gemini API key |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model to use |
 
 ## Tech Stack
 
-- **Python 3.12+**
-- **Google Gemini 2.0 Flash** — LLM for reasoning, code generation, and data interpretation
-- **LangChain** — LLM abstraction and message handling
-- **LangGraph** — State graph orchestration with conditional edges
-- **pandas / numpy** — Data loading and metric computation
+| Layer | Technology |
+|-------|-----------|
+| LLM | Google Gemini 2.0 Flash |
+| Agent orchestration | LangGraph |
+| LLM abstraction | LangChain |
+| Backend API | FastAPI + SSE streaming |
+| Data processing | pandas, numpy |
+| Visualisation | Plotly |
+| Frontend | React 18 + Vite |
+| Styling | CSS (custom) |
