@@ -1,0 +1,84 @@
+### Fintech Agent API — REST Client samples
+### Install VS Code extension: humao.rest-client
+
+@baseUrl = http://localhost:8000
+
+# ─────────────────────────────────────────────
+# 1. Health check
+# ─────────────────────────────────────────────
+GET {{baseUrl}}/health
+Accept: application/json
+
+###
+
+# ─────────────────────────────────────────────
+# 2. Single CSV (borrower file only)
+# ─────────────────────────────────────────────
+POST {{baseUrl}}/analyze
+Content-Type: application/json
+
+{
+  "csv_paths": [
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Medium Size data Set/03_Loan_Facilities.csv"
+  ]
+}
+
+###
+
+# ─────────────────────────────────────────────
+# 3. Full Medium dataset (5 CSVs)
+# ─────────────────────────────────────────────
+POST {{baseUrl}}/analyze
+Content-Type: application/json
+
+{
+  "csv_paths": [
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Medium Size data Set/01_Borrowers.csv",
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Medium Size data Set/02_Collateral.csv",
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Medium Size data Set/03_Loan_Facilities.csv",
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Medium Size data Set/04_Payment_Schedule_Transactions.csv",
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Medium Size data Set/05_Collections.csv"
+  ]
+}
+
+###
+
+# ─────────────────────────────────────────────
+# 4. Full Large dataset (3 CSVs)
+# ─────────────────────────────────────────────
+POST {{baseUrl}}/analyze
+Content-Type: application/json
+
+{
+  "csv_paths": [
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Large data set/borrowers.csv",
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Large data set/loans.csv",
+    "/Users/bharathmogalapu/Desktop/Fintech-Agent/Large data set/transactions.csv"
+  ]
+}
+
+###
+
+# ─────────────────────────────────────────────
+# 5. Error case — bad path (expect 422)
+# ─────────────────────────────────────────────
+POST {{baseUrl}}/analyze
+Content-Type: application/json
+
+{
+  "csv_paths": [
+    "/does/not/exist.csv"
+  ]
+}
+
+###
+
+# ─────────────────────────────────────────────
+# 6. Error case — empty list (expect 422)
+# ─────────────────────────────────────────────
+POST {{baseUrl}}/analyze
+Content-Type: application/json
+
+{
+  "csv_paths": []
+}
