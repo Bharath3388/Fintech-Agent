@@ -1,0 +1,81 @@
+{
+  "loan_details": {
+    "L1": {
+      "behavior": "prepay_150pct",
+      "outstanding": 0.0,
+      "dpd": 0,
+      "bucket": "Current",
+      "total_paid": 522392.23
+    },
+    "L2": {
+      "behavior": "zero_payment",
+      "outstanding": 500000,
+      "dpd": 365,
+      "bucket": "DPD 90+",
+      "total_paid": 0
+    },
+    "L3": {
+      "behavior": "full_pay",
+      "outstanding": 0.0,
+      "dpd": 0,
+      "bucket": "Current",
+      "total_paid": 533092732.07
+    },
+    "L4": {
+      "behavior": "full_pay",
+      "outstanding": 0.0,
+      "dpd": 0,
+      "bucket": "Current",
+      "total_paid": 10661.86
+    },
+    "L5": {
+      "behavior": "half_pay",
+      "outstanding": 281706.33,
+      "dpd": 120,
+      "bucket": "DPD 90+",
+      "total_paid": 266546.28
+    },
+    "L6": {
+      "behavior": "late_pay_45d",
+      "outstanding": 0.0,
+      "dpd": 45,
+      "bucket": "DPD 31-60",
+      "total_paid": 533092.75
+    }
+  },
+  "M1": {
+    "active_loan_count": 6,
+    "note": "Mix of 6 loans with extreme behaviors"
+  },
+  "M2": {
+    "description": "POS by DPD: Current (L1 prepay + L3 large + L4 small), DPD 31-60 (L6 late), DPD 90+ (L2 zero + L5 half)"
+  },
+  "M3": {
+    "overall_ce_pct": 99.8486,
+    "monthly_ce": {
+      "2025-05": 99.9004,
+      "2025-06": 99.9004,
+      "2025-07": 99.9004,
+      "2025-08": 99.9004,
+      "2025-09": 99.9004,
+      "2025-10": 99.9004,
+      "2025-11": 99.9004,
+      "2025-12": 99.8764,
+      "2026-01": 99.751,
+      "2026-02": 99.751,
+      "2026-03": 99.751,
+      "2026-04": 99.751
+    },
+    "total_scheduled": 535235764.68,
+    "total_paid": 534425425.15,
+    "description": "CE mix: prepay boosts CE, zero-pay drags it. Overall ~99.8%"
+  },
+  "edge_cases_covered": [
+    "Prepayment > 100% EMI (L1)",
+    "Zero payments / total default (L2)",
+    "Very large loan 50Cr (L3)",
+    "Very small loan 10K (L4)",
+    "Partial payer 50% (L5)",
+    "Consistently late payer 45 days (L6)"
+  ]
+}

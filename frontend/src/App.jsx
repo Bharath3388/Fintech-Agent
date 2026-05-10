@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import UploadArea from './components/UploadArea';
 import ProgressTracker from './components/ProgressTracker';
 import ResultsDashboard from './components/ResultsDashboard';
+import ChatSidebar from './components/ChatSidebar';
 import { Activity } from 'lucide-react';
 
 const API = '/api';
@@ -17,6 +18,8 @@ export default function App() {
   const [stageStatus, setStageStatus] = useState({});
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   const STAGES = [
     { key: 'SchemaDiscovery-AI', label: 'File Discovery' },
@@ -108,6 +111,7 @@ export default function App() {
     // Detect final result event from SSE (has summary + metrics)
     if (event.summary !== undefined && event.metrics !== undefined) {
       setResult(event);
+      if (event.session_id) setSessionId(event.session_id);
       setPhase('done');
       setStageStatus(prev => {
         const next = { ...prev };
@@ -200,6 +204,8 @@ export default function App() {
     setResult(null);
     setError(null);
     setActiveAgent('');
+    setSessionId(null);
+    setChatOpen(false);
   }, []);
 
   return (
@@ -241,7 +247,18 @@ export default function App() {
       )}
 
       {phase === 'done' && result && (
-        <ResultsDashboard result={result} onReset={handleReset} />
+        <div className={`main-with-sidebar ${chatOpen ? 'sidebar-open' : ''}`}>
+          <div className="main-content">
+            <ResultsDashboard result={result} onReset={handleReset} />
+          </div>
+          {sessionId && (
+            <ChatSidebar
+              sessionId={sessionId}
+              open={chatOpen}
+              onToggle={() => setChatOpen(o => !o)}
+            />
+          )}
+        </div>
       )}
     </div>
   );

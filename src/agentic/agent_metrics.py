@@ -31,6 +31,46 @@ from core.logger import (
 
 AGENT = "MetricComputation-AI"
 
+# ── M1 key normalization — LLM may produce different key names ────────────
+_M1_KEY_MAP = {
+    # total_pos_cr variants
+    "total_pos_crores": "total_pos_cr",
+    "total_pos": "total_pos_cr",
+    "pos_crores": "total_pos_cr",
+    "total_pos_cr": "total_pos_cr",
+    # interest_outstanding_cr variants
+    "interest_outstanding_crores": "interest_outstanding_cr",
+    "interest_outstanding": "interest_outstanding_cr",
+    "interest_outstanding_cr": "interest_outstanding_cr",
+    # active_loan_count variants
+    "active_loans": "active_loan_count",
+    "active_count": "active_loan_count",
+    "active_loan_count": "active_loan_count",
+    "loan_count": "active_loan_count",
+    # wair variants
+    "wair_pct": "wair_pct",
+    "wair": "wair_pct",
+    "weighted_avg_interest_rate": "wair_pct",
+    "weighted_avg_interest_rate_pct": "wair_pct",
+    "weighted_average_interest_rate": "wair_pct",
+    # wart variants
+    "wart_months": "wart_months",
+    "wart": "wart_months",
+    "weighted_avg_residual_tenor_months": "wart_months",
+    "weighted_average_residual_tenor_months": "wart_months",
+    "residual_tenor_months": "wart_months",
+}
+
+def _normalize_m1_keys(data: dict) -> dict:
+    """Standardize M1 result keys to canonical names."""
+    if not isinstance(data, dict):
+        return data
+    out = {}
+    for k, v in data.items():
+        canonical = _M1_KEY_MAP.get(k.lower().strip(), k)
+        out[canonical] = v
+    return out
+
 
 def compute_metrics(state: AgentState) -> dict:
     """LangGraph node: Use LLM to generate and execute metric computation code."""
@@ -93,6 +133,7 @@ def compute_metrics(state: AgentState) -> dict:
             all_messages.append(f"[{AGENT}] {metric_key}: SKIPPED — {skip_reason}")
             continue
 
+        generated_code = ""
         try:
             # ── Ask LLM to generate code ──────────────────────────────
             log_info(AGENT, f"Asking Gemini to generate computation code...")
@@ -134,6 +175,10 @@ def compute_metrics(state: AgentState) -> dict:
             exec(generated_code, exec_namespace)
 
             result_data = exec_namespace.get("result")
+
+            # Normalize M1 keys to canonical names
+            if result_data is not None and metric_key == "M1":
+                result_data = _normalize_m1_keys(result_data)
 
             if result_data is None:
                 log_warn(AGENT, f"Code executed but 'result' variable not set")
@@ -188,6 +233,9 @@ def compute_metrics(state: AgentState) -> dict:
                                      loans_df, txns_df, extra_dfs, AGENT, metric_name)
 
             if fixed is not None:
+                # Normalize M1 keys in retry path too
+                if metric_key == "M1":
+                    fixed = _normalize_m1_keys(fixed)
                 insight = _get_llm_insight(llm, metric_name, fixed)
                 if isinstance(fixed, dict) and all(mid in fixed for mid in metric_ids):
                     for mid in metric_ids:
@@ -307,62 +355,78 @@ def _get_llm_insight(llm, metric_name: str, result_data) -> str:
 def _retry_with_fix(llm, prompt_template, schema_text, original_code,
                      error_msg, traceback_str, loans_df, txns_df, extra_dfs,
                      agent_name, metric_name) -> dict | None:
-    """Ask LLM to fix its own code after an error."""
-    try:
-        # Give LLM the error and ask to fix
-        # Build column info for all available DataFrames
-        col_info = ""
-        if loans_df is not None:
-            col_info += f"  loans_df.columns = {list(loans_df.columns)[:30]}\n"
-        else:
-            col_info += "  loans_df = None\n"
-        if txns_df is not None:
-            col_info += f"  txns_df.columns = {list(txns_df.columns)}\n"
-        else:
-            col_info += "  txns_df = None\n"
-        for k, v in extra_dfs.items():
-            col_info += f"  extra_dfs['{k}'].columns = {list(v.columns)[:30]}\n"
+    """Ask LLM to fix its own code after an error — up to 3 self-correction attempts."""
+    col_info = ""
+    if loans_df is not None:
+        col_info += f"  loans_df.columns = {list(loans_df.columns)[:30]}\n"
+    else:
+        col_info += "  loans_df = None\n"
+    if txns_df is not None:
+        col_info += f"  txns_df.columns = {list(txns_df.columns)}\n"
+    else:
+        col_info += "  txns_df = None\n"
+    for k, v in extra_dfs.items():
+        col_info += f"  extra_dfs['{k}'].columns = {list(v.columns)[:30]}\n"
 
-        fix_prompt = (
-            f"Your previous code for {metric_name} failed with this error:\n\n"
-            f"ERROR: {error_msg}\n\n"
-            f"TRACEBACK (last 300 chars):\n{traceback_str[-300:]}\n\n"
-            f"ORIGINAL CODE:\n{original_code[:1500]}\n\n"
-            f"Available DataFrames:\n{col_info}\n"
-            f"Fix the code. Return ONLY executable Python code. "
-            f"Store the result in a variable called 'result'. "
-            f"If the data needed is not available, set result = {{'error': 'not_computable', 'reason': '...'}}."
-        )
+    current_code = original_code
+    current_error = error_msg
+    current_tb = traceback_str
 
-        response = llm.invoke([
-            SystemMessage(content=METRIC_SYSTEM),
-            HumanMessage(content=fix_prompt),
-        ])
+    for attempt in range(1, 4):  # attempts 1, 2, 3
+        try:
+            fix_prompt = (
+                f"Your previous code for {metric_name} failed with this error:\n\n"
+                f"ERROR: {current_error}\n\n"
+                f"TRACEBACK (last 300 chars):\n{current_tb[-300:]}\n\n"
+                f"FAILING CODE:\n{current_code[:1500]}\n\n"
+                f"Available DataFrames:\n{col_info}\n"
+                f"Fix the code. Return ONLY executable Python code. "
+                f"Store the result in a variable called 'result'. "
+                f"If the data needed is not available, set result = {{'error': 'not_computable', 'reason': '...'}}."
+            )
 
-        fixed_code = extract_text(response).strip()
-        if fixed_code.startswith("```"):
-            fixed_code = fixed_code.split("\n", 1)[1]
-            if fixed_code.endswith("```"):
-                fixed_code = fixed_code.rsplit("```", 1)[0]
-        fixed_code = fixed_code.strip()
+            response = llm.invoke([
+                SystemMessage(content=METRIC_SYSTEM),
+                HumanMessage(content=fix_prompt),
+            ])
 
-        log_info(agent_name, f"Executing fixed code ({len(fixed_code)} chars)...")
+            fixed_code = extract_text(response).strip()
+            if fixed_code.startswith("```"):
+                fixed_code = fixed_code.split("\n", 1)[1]
+                if fixed_code.endswith("```"):
+                    fixed_code = fixed_code.rsplit("```", 1)[0]
+            fixed_code = fixed_code.strip()
 
-        exec_namespace = {
-            "loans_df": loans_df.copy() if loans_df is not None else None,
-            "txns_df": txns_df.copy() if txns_df is not None else None,
-            "extra_dfs": {k: v.copy() for k, v in extra_dfs.items()},
-            "pd": pd,
-            "np": np,
-            "datetime": datetime,
-            "result": None,
-            "print": _make_agent_print(agent_name),
-            "normalize_dpd_bucket": _normalize_dpd_bucket,
-        }
+            log_info(agent_name, f"Executing fixed code (attempt {attempt}/3, {len(fixed_code)} chars)...")
 
-        exec(fixed_code, exec_namespace)
-        return exec_namespace.get("result")
+            exec_namespace = {
+                "loans_df": loans_df.copy() if loans_df is not None else None,
+                "txns_df": txns_df.copy() if txns_df is not None else None,
+                "extra_dfs": {k: v.copy() for k, v in extra_dfs.items()},
+                "pd": pd,
+                "np": np,
+                "datetime": datetime,
+                "result": None,
+                "print": _make_agent_print(agent_name),
+                "normalize_dpd_bucket": _normalize_dpd_bucket,
+            }
 
-    except Exception as e:
-        log_error(agent_name, f"Retry also failed: {e}")
-        return None
+            exec(fixed_code, exec_namespace)
+            result = exec_namespace.get("result")
+            if result is not None:
+                log_info(agent_name, f"Fix succeeded on attempt {attempt}/3")
+                return result
+
+            # result is None — treat as an error and retry
+            current_code = fixed_code
+            current_error = "Code executed but 'result' variable was not set"
+            current_tb = ""
+
+        except Exception as e:
+            current_error = f"{type(e).__name__}: {e}"
+            current_tb = traceback.format_exc()
+            current_code = fixed_code if 'fixed_code' in dir() else current_code
+            log_error(agent_name, f"Retry attempt {attempt}/3 failed: {current_error}")
+
+    log_error(agent_name, f"All 3 retry attempts failed. Last error: {current_error}")
+    return None

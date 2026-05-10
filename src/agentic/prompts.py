@@ -234,7 +234,14 @@ The code should:
 - Filter for active loans (status in Active, Live, NPA — anything not Closed/Written Off)
 - Handle nulls gracefully
 - Print results clearly
-- Store results in a dict called 'result'
+- Store results in a dict called 'result' with EXACTLY these keys:
+  result = {{
+      "total_pos_cr": <float>,
+      "interest_outstanding_cr": <float>,
+      "active_loan_count": <int>,
+      "wair_pct": <float>,
+      "wart_months": <float>,
+  }}
 
 Return ONLY executable Python code, no markdown fences."""
 
@@ -259,49 +266,170 @@ METRIC_TASK_M3 = """Compute M3: Overall Collections Efficiency Time Series
 Schema mapping:
 {schema_mapping}
 
-Generate Python code that:
-1. Determines the month/period column (observation_month, or extract from due_date)
-2. Groups transactions by month
-3. Computes per month: EMI Due (sum of scheduled_emi), Amount Collected (sum of actual_principal_paid + actual_interest_paid)
-4. Computes CE% = Amount Collected / EMI Due × 100
-5. Sorts by month
-6. Stores results in a dict called 'result' with keys: time_series (list of dicts), overall_ce_pct, total_emi_due, total_collected
+Generate Python code that EXACTLY follows these steps:
+
+Step 1 — Identify columns from schema mapping:
+  obs_col   = '<observation_month_or_due_date_column>'   # e.g. 'observation_month_year' or 'due_date'
+  sched_col = '<scheduled_emi_column>'                   # e.g. 'scheduled_emi'
+  paid_col  = '<actual_total_paid_column>'               # e.g. 'actual_total_paid'
+  # If no single paid column exists, sum actual_principal_paid + actual_interest_paid
+
+Step 2 — Parse observation month:
+  # If obs_col is a date column, extract YYYY-MM period:
+  txns_df['_month'] = pd.to_datetime(txns_df[obs_col], errors='coerce').dt.to_period('M').astype(str)
+  # If obs_col is already a string period like '2024-03', use it directly:
+  # txns_df['_month'] = txns_df[obs_col].astype(str).str[:7]
+  # Choose whichever approach matches the actual data.
+
+Step 3 — Monthly CE (ALL months, sorted):
+  monthly = txns_df.groupby('_month').agg(
+      emi_due=pd.NamedAgg(column=sched_col, aggfunc='sum'),
+      collected=pd.NamedAgg(column=paid_col, aggfunc='sum')
+  ).reset_index().sort_values('_month')
+  monthly = monthly[monthly['emi_due'] > 0].copy()
+  monthly['ce_pct'] = (monthly['collected'] / monthly['emi_due'] * 100).round(4)
+  monthly['month'] = monthly['_month']
+
+Step 4 — Recent slices (DO NOT show all history in charts):
+  # Last 24 calendar months for the monthly view
+  monthly_recent = monthly.tail(24).copy()
+  
+  # Quarterly: derive quarter label then aggregate
+  monthly['_quarter'] = pd.PeriodIndex(monthly['_month'], freq='M').to_timestamp().to_period('Q').astype(str)
+  quarterly = monthly.groupby('_quarter').agg(
+      emi_due=('emi_due', 'sum'),
+      collected=('collected', 'sum')
+  ).reset_index().sort_values('_quarter')
+  quarterly = quarterly[quarterly['emi_due'] > 0].copy()
+  quarterly['ce_pct'] = (quarterly['collected'] / quarterly['emi_due'] * 100).round(4)
+  quarterly['month'] = quarterly['_quarter']
+  # Last 8 quarters for quarterly view
+  quarterly_recent = quarterly.tail(8).copy()
+
+Step 5 — Overall stats across ALL history:
+  total_emi_due  = float(monthly['emi_due'].sum())
+  total_collected = float(monthly['collected'].sum())
+  overall_ce_pct  = round(total_collected / total_emi_due * 100, 4) if total_emi_due else 0
+
+Step 6 — Store result:
+  result = {{
+      'time_series':       monthly[['month','emi_due','collected','ce_pct']].to_dict('records'),
+      'monthly_recent':    monthly_recent[['month','emi_due','collected','ce_pct']].to_dict('records'),
+      'quarterly_recent':  quarterly_recent[['month','emi_due','collected','ce_pct']].to_dict('records'),
+      'overall_ce_pct':    overall_ce_pct,
+      'total_emi_due':     total_emi_due,
+      'total_collected':   total_collected,
+  }}
 
 Return ONLY executable Python code, no markdown fences."""
 
 
-METRIC_TASK_M4 = """Compute M4: Collections Efficiency by DPD Bucket
+METRIC_TASK_M4 = """Compute M4: Collections Efficiency by DPD Bucket (Multi-Month)
 
 Schema mapping:
 {schema_mapping}
 
-Generate Python code that:
-1. Uses the latest month in the transaction data
-2. Normalises DPD bucket labels to standard 5 buckets
-3. Groups by DPD bucket for that month
-4. Computes per bucket: EMI Due, Amount Collected, CE%, Loan Count
-5. Stores results in a dict called 'result'
+Generate Python code that EXACTLY follows this algorithm:
+
+Step 1: Identify columns from schema mapping:
+  obs_col = '<observation_month_column>'  # e.g. 'observation_month_year'
+  dpd_col = '<dpd_bucket_column>'
+  emi_col = '<scheduled_emi_column>'      # or similar (emi_due, scheduled_payment)
+  paid_col = '<actual_total_paid_column>'  # or actual_payment, amount_collected
+
+Step 2: Get ALL unique months sorted:
+  months = sorted(txns_df[obs_col].dropna().unique())
+
+Step 3: Normalise DPD bucket labels:
+  BUCKETS = ['Current', 'DPD 1-30', 'DPD 31-60', 'DPD 61-90', 'DPD 90+']
+
+Step 4: For EACH month, compute CE by DPD bucket:
+  by_month = {{}}
+  for month in months:
+      month_df = txns_df[txns_df[obs_col] == month]
+      month_data = {{}}
+      for bucket in BUCKETS:
+          bdf = month_df[month_df[dpd_col] == bucket]
+          emi_due = float(bdf[emi_col].sum()) if len(bdf) > 0 else 0
+          collected = float(bdf[paid_col].sum()) if len(bdf) > 0 else 0
+          ce_pct = (collected / emi_due * 100) if emi_due > 0 else 0
+          loan_count = int(bdf[loan_id_col].nunique()) if len(bdf) > 0 else 0
+          month_data[bucket] = {{"emi_due": emi_due, "collected": collected, "ce_pct": round(ce_pct, 2), "loan_count": loan_count}}
+      by_month[str(month)] = month_data
+
+Step 5: Store result:
+  month_labels = [str(m) for m in months]
+  result = {{
+      "months": month_labels,
+      "latest_month": month_labels[-1],
+      "by_month": by_month,
+      "latest": by_month[month_labels[-1]]
+  }}
 
 Return ONLY executable Python code, no markdown fences."""
 
 
-METRIC_TASK_M5_M8 = """Compute M5-M8: DPD Transition Matrices
+METRIC_TASK_M5_M8 = """Compute M5-M8: DPD Transition Matrices (Multi-Period)
 
 Schema mapping:
 {schema_mapping}
 
-Generate Python code that computes all 4 transition matrices using the latest 2 consecutive months:
-- M5: POS Transition Matrix (INR Amount) — 5x5 matrix showing POS flow between DPD buckets
-- M6: POS Transition Matrix (%) — same but rows normalised to 100%
-- M7: Loan Count Transition Matrix (Count) — 5x5 showing loan count migration
-- M8: Loan Count Transition Matrix (%) — same but rows normalised to 100%
+Generate Python code that EXACTLY follows this algorithm.
+DPD buckets are PRE-NORMALISED — do NOT re-normalise.
 
-Steps:
-1. Get the latest month and previous month from the data
-2. For each loan: get its DPD bucket in month T-1 (FROM) and month T (TO)
-3. Normalise buckets to standard 5: Current, DPD 1-30, DPD 31-60, DPD 61-90, DPD 90+
-4. Build 5x5 pivot tables
-5. Store in dict 'result' with keys: m5_pos_inr, m6_pos_pct, m7_count, m8_count_pct (each as nested dict)
+Step 1: Identify actual column names from the schema mapping above and assign them:
+  obs_col  = '<observation_month_column_in_txns>'   # e.g. 'observation_month_year'
+  loan_col = '<loan_id_column_in_txns>'             # e.g. 'loan_id'
+  dpd_col  = '<dpd_bucket_column_in_txns>'          # e.g. 'dpd_bucket'
+  pos_col  = '<closing_pos_column_in_txns>'         # e.g. 'closing_outstanding_principal'
+
+Step 2: Find ALL unique months sorted chronologically:
+  months = sorted(txns_df[obs_col].dropna().unique())
+
+Step 3: For EACH consecutive pair of months (T-1, T), compute the transition matrix:
+
+  BUCKETS = ['Current', 'DPD 1-30', 'DPD 31-60', 'DPD 61-90', 'DPD 90+']
+  
+  def compute_transition(T1, T):
+      cols_T1 = txns_df[txns_df[obs_col] == T1][[loan_col, dpd_col, pos_col]].drop_duplicates(subset=[loan_col], keep='last')
+      cols_T  = txns_df[txns_df[obs_col] == T ][[loan_col, dpd_col, pos_col]].drop_duplicates(subset=[loan_col], keep='last')
+      df_T1 = cols_T1.rename(columns={{dpd_col: 'from_bucket', pos_col: 'from_pos'}})
+      df_T  = cols_T .rename(columns={{dpd_col: 'to_bucket',   pos_col: 'to_pos'}})
+      merged = df_T1.merge(df_T, on=loan_col)
+      merged['from_bucket'] = merged['from_bucket'].astype(str)
+      merged['to_bucket']   = merged['to_bucket'].astype(str)
+      m5_raw = merged.pivot_table(index='from_bucket', columns='to_bucket', values='to_pos',   aggfunc='sum',  fill_value=0)
+      m7_raw = merged.pivot_table(index='from_bucket', columns='to_bucket', values=loan_col, aggfunc='count', fill_value=0)
+      m5_raw = m5_raw.reindex(index=BUCKETS, columns=BUCKETS, fill_value=0)
+      m7_raw = m7_raw.reindex(index=BUCKETS, columns=BUCKETS, fill_value=0)
+      m6_raw = m5_raw.div(m5_raw.sum(axis=1).replace(0, 1), axis=0) * 100
+      m8_raw = m7_raw.div(m7_raw.sum(axis=1).replace(0, 1), axis=0) * 100
+      def pivot_to_dict(df):
+          return {{r: {{c: round(float(df.loc[r, c]), 4) for c in df.columns}} for r in df.index}}
+      return pivot_to_dict(m5_raw), pivot_to_dict(m6_raw), pivot_to_dict(m7_raw), pivot_to_dict(m8_raw)
+
+Step 4: Build result with ALL periods:
+  all_m5, all_m6, all_m7, all_m8 = {{}}, {{}}, {{}}, {{}}
+  period_labels = []
+  for i in range(1, len(months)):
+      T1, T = months[i-1], months[i]
+      label = str(T)
+      m5, m6, m7, m8 = compute_transition(T1, T)
+      all_m5[label] = m5
+      all_m6[label] = m6
+      all_m7[label] = m7
+      all_m8[label] = m8
+      period_labels.append(label)
+
+Step 5: Store result:
+  result = {{
+      'periods': period_labels,
+      'latest_period': period_labels[-1] if period_labels else '',
+      'm5_pos_inr':   all_m5,
+      'm6_pos_pct':   all_m6,
+      'm7_count':     all_m7,
+      'm8_count_pct': all_m8,
+  }}
 
 Return ONLY executable Python code, no markdown fences."""
 
@@ -328,7 +456,7 @@ METRIC_PROMPTS = {
     "M2": ("POS by DPD Bucket", METRIC_TASK_M2),
     "M3": ("Collections Efficiency Time Series", METRIC_TASK_M3),
     "M4": ("CE by DPD Bucket", METRIC_TASK_M4),
-    "M5_M8": ("DPD Transition Matrices", METRIC_TASK_M5_M8),
+    "M5_M6_M7_M8": ("DPD Transition Matrices", METRIC_TASK_M5_M8),
     "M9": ("Repayment by Cohort", METRIC_TASK_M9),
 }
 
@@ -362,30 +490,376 @@ AVAILABLE IN YOUR NAMESPACE:
 - result: dict — YOU MUST populate this: result[metric_id] = go.Figure(...)
 
 CHART TYPE GUIDELINES:
-- M1 (Portfolio Summary): go.Table — show ALL key-value pairs as a styled table.
-  Use header row with dark blue background, alternating row colors.
+- M1 (Portfolio Summary): go.Table — ALWAYS create a 2-column table: column 1 = Metric label, column 2 = Value.
+  CRITICAL: cells.values MUST be a list of exactly 2 lists: [[label1, label2, ...], [value1, value2, ...]].
+  Use EXACTLY this pattern:
+    d = metrics_data["M1"]
+    labels = ["Total POS (₹ Cr)", "Interest Outstanding (₹ Cr)", "Active Loan Count",
+              "Weighted Avg Interest Rate (%)", "Weighted Avg Residual Tenor (months)"]
+    values = [
+        f"{{d.get('total_pos_cr', 0):,.2f}}",
+        f"{{d.get('interest_outstanding_cr', 0):,.2f}}",
+        f"{{int(d.get('active_loan_count', 0)):,}}",
+        f"{{d.get('wair_pct', 0):.2f}}%",
+        f"{{d.get('wart_months', 0):.2f}} months",
+    ]
+    fig = go.Figure(go.Table(
+        header=dict(values=["<b>Metric</b>", "<b>Value</b>"], ...),
+        cells=dict(values=[labels, values], ...)
+    ))
 - M2 (POS by DPD Bucket): Horizontal bar chart.
   Show bucket names on Y, POS values on X, annotate with percentage.
   Format values in ₹ Crores.
-- M3 (Collections Efficiency Time Series): Line chart with filled area.
-  X = month/period (discover the key name dynamically from the time_series list items),
-  Y = CE%. Add a dashed 100% target line. Filter out entries where CE% is 0 or missing.
-- M4 (CE by DPD Bucket): Vertical bar chart.
-  Color bars by bucket (green→red). Annotate CE% values on top.
-- M5/M6/M7/M8 (Transition Matrices): go.Heatmap with text annotations.
-  Format values appropriately (₹ Cr for absolute, % for percentages).
-  Use sequential green or red colorscale.
-- M9 (Vintage Cohort Curves): Multi-line chart.
-  Each cohort = one line. X = MOB, Y = cumulative repayment %.
-  Use viridis-like color progression. Add legend.
+- M3 (Collections Efficiency Time Series): Line chart with MONTHLY/QUARTERLY toggle buttons.
+  The data dict has keys: monthly_recent (last 24 months), quarterly_recent (last 8 quarters),
+  time_series (full history — do NOT use this for the chart), overall_ce_pct.
+  
+  CRITICAL RULES for this chart:
+  1. xaxis MUST have type='category' (months and quarters are STRING labels like "2024-04" and
+     "2024Q2" — Plotly will misinterpret them as dates without category type and the chart
+     will appear EMPTY in Quarterly view).
+  2. Y-axis range must be DYNAMIC based on actual data (medium dataset has CE > 100% from
+     prepayments). Compute: y_max = max(105, max(all_ce_values) + 5).
+  3. Build exactly 4 traces in this order: monthly-line, monthly-target, quarterly-line, quarterly-target.
+  4. Default visibility: [True, True, False, False] (Monthly view active).
+  
+  Build the chart EXACTLY like this:
+  
+    data = metrics_data["M3"]
+    monthly_data    = data.get("monthly_recent")    or data.get("time_series", [])
+    quarterly_data  = data.get("quarterly_recent")  or []
+  
+    # Extract x/y — month key may be 'month', 'period', 'observation_month', etc.
+    def extract_series(rows):
+        if not rows: return [], []
+        mk = next((k for k in rows[0] if any(x in k.lower() for x in ['month','period','quarter','date'])), list(rows[0].keys())[0])
+        xs = [r[mk] for r in rows]
+        ys = [r.get('ce_pct', r.get('collection_efficiency', r.get('ce', 0))) for r in rows]
+        return xs, ys
+  
+    m_x, m_y = extract_series(monthly_data)
+    q_x, q_y = extract_series(quarterly_data)
+  
+    fig = go.Figure()
+    # Trace 0: monthly (default visible)
+    fig.add_trace(go.Scatter(
+        x=m_x, y=m_y, mode='lines+markers', name='Monthly CE%',
+        line=dict(color='#4ade80', width=2.5),
+        fill='tozeroy', fillcolor='rgba(74,222,128,0.12)',
+        marker=dict(size=5), visible=True
+    ))
+    # Trace 1: monthly 100% target line
+    fig.add_trace(go.Scatter(
+        x=m_x, y=[100]*len(m_x), mode='lines', name='Target 100%',
+        line=dict(color='#f59e0b', width=1.5, dash='dash'), visible=True
+    ))
+    # Trace 2: quarterly (hidden by default)
+    fig.add_trace(go.Scatter(
+        x=q_x, y=q_y, mode='lines+markers', name='Quarterly CE%',
+        line=dict(color='#3b82f6', width=2.5),
+        fill='tozeroy', fillcolor='rgba(59,130,246,0.12)',
+        marker=dict(size=7, symbol='diamond'), visible=False
+    ))
+    # Trace 3: quarterly 100% target
+    fig.add_trace(go.Scatter(
+        x=q_x, y=[100]*len(q_x), mode='lines', name='Target 100%',
+        line=dict(color='#f59e0b', width=1.5, dash='dash'), visible=False
+    ))
+  
+    overall = data.get('overall_ce_pct', 0)
+    # Compute y-axis range from actual data (handle prepayment >100% cases)
+    all_y = [v for v in (m_y + q_y) if isinstance(v, (int, float)) and v > 0]
+    y_min = max(0, min(all_y) - 5) if all_y else 0
+    y_max = max(105, max(all_y) + 5) if all_y else 110
+    fig.update_layout(
+        updatemenus=[dict(
+            type='buttons', direction='right',
+            x=0.0, y=1.12, xanchor='left',
+            showactive=True,
+            buttons=[
+                dict(label='Monthly',   method='update', args=[{{'visible': [True,  True,  False, False]}}, {{}}]),
+                dict(label='Quarterly', method='update', args=[{{'visible': [False, False, True,  True ]}}, {{}}]),
+            ],
+            bgcolor='#2a2a4a', bordercolor='#3b82f6',
+            font=dict(color='#e0e0e0', size=13)
+        )],
+        title=dict(text=f'<b>M3 \u2014 Collection Efficiency</b>  <span style="font-size:13px;color:#8892a4">(Overall: {{overall:.2f}}%)</span>', x=0.02),
+        xaxis=dict(title='Period', tickangle=-35, type='category'),
+        yaxis=dict(title='CE %', range=[y_min, y_max]),
+        height=520, width=1050,
+    )
+- M4 (CE by DPD Bucket): Vertical bar chart with MONTH SELECTOR.
+  The data dict has keys: months (list), latest_month, by_month (dict of month → bucket data), latest.
+  If data has "by_month", use it for multi-month support.
+  If data only has simple bucket keys (backward compat), treat as single-month.
+  
+  CRITICAL RULES for M4:
+  1. Show DPD buckets on X-axis, CE% on Y-axis.
+  2. Color bars by bucket severity (green→red): ["#4ade80", "#facc15", "#f59e0b", "#f97316", "#ef4444"].
+  3. Annotate CE% values on top of each bar.
+  4. Add a vertical reference line at 100% (dashed orange).
+  5. If multi-month data exists, add a MONTH SELECTOR dropdown (Plotly updatemenus).
+     Create one set of bar traces per month. Default to the latest month visible.
+  
+  Build the chart with this pattern:
+  
+    data = metrics_data["M4"]
+    bucket_order = ["Current", "DPD 1-30", "DPD 31-60", "DPD 61-90", "DPD 90+"]
+    bucket_colors = ["#4ade80", "#facc15", "#f59e0b", "#f97316", "#ef4444"]
+    
+    by_month = data.get("by_month", {{}})
+    months = data.get("months", [])
+    if not by_month:
+        # Backward compat: data is single-month bucket dict
+        by_month = {{"Latest": data.get("latest", data)}}
+        months = ["Latest"]
+    
+    fig = go.Figure()
+    for i, month in enumerate(months):
+        month_data = by_month.get(month, {{}})
+        ces = []
+        for b in bucket_order:
+            bd = month_data.get(b, {{}})
+            if isinstance(bd, dict):
+                ce = bd.get("ce_pct", bd.get("ce", 0))
+            else:
+                ce = bd if isinstance(bd, (int, float)) else 0
+            ces.append(ce if ce else 0)
+        fig.add_trace(go.Bar(
+            x=bucket_order, y=ces,
+            marker_color=bucket_colors,
+            text=[f"{{v:.1f}}%" for v in ces], textposition='outside',
+            visible=(i == len(months) - 1),  # latest visible by default
+            name=month
+        ))
+    
+    # Add 100% reference line
+    fig.add_hline(y=100, line_dash="dash", line_color="#f59e0b", line_width=1.5,
+                  annotation_text="100%", annotation_position="top right")
+    
+    # Month selector dropdown
+    if len(months) > 1:
+        buttons = []
+        for i, month in enumerate(months):
+            vis = [j == i for j in range(len(months))]
+            buttons.append(dict(label=str(month), method='update',
+                               args=[{{'visible': vis}}, {{'title': dict(text=f'<b>M4 — CE by DPD Bucket</b> ({{month}})')}}]))
+        fig.update_layout(
+            updatemenus=[dict(type='dropdown', direction='down', x=1.0, y=1.15, xanchor='right',
+                             showactive=True, buttons=buttons,
+                             bgcolor='#2a2a4a', bordercolor='#3b82f6', font=dict(color='#e0e0e0'))]
+        )
+    
+    latest = months[-1] if months else ""
+    fig.update_layout(
+        title=dict(text=f'<b>M4 — CE by DPD Bucket</b> ({{latest}})', x=0.02),
+        xaxis=dict(title='DPD Bucket'), yaxis=dict(title='CE %'),
+        height=550, width=950,
+    )
+- M5/M6/M7/M8 (Transition Matrices): INDIVIDUAL go.Heatmap charts with PERIOD SELECTOR.
+  The data dict has keys: periods (list), latest_period, m5_pos_inr, m6_pos_pct, m7_count, m8_count_pct.
+  Each matrix key (e.g. m5_pos_inr) maps to a dict: {{period_label: {{from_bucket: {{to_bucket: value}}}}}}.
+  If the data has NO 'periods' key, it's single-period: {{from_bucket: {{to_bucket: value}}}}.
+  
+  IMPORTANT: Charts are generated INDIVIDUALLY. The metric_id will be "M5", "M6", "M7", or "M8".
+  Map the metric_id to the correct data key:
+    M5 → "m5_pos_inr" (format as ₹ Cr, divide by 1e7)
+    M6 → "m6_pos_pct" (format as %)
+    M7 → "m7_count" (format as integers)
+    M8 → "m8_count_pct" (format as %)
+  
+  Build the chart EXACTLY like this (replace METRIC_ID with the actual metric_id e.g. "M5"):
+  
+    mid = "METRIC_ID"  # e.g. "M5", "M6", "M7", or "M8"
+    data = metrics_data[mid]
+    bucket_order = ["Current", "DPD 1-30", "DPD 31-60", "DPD 61-90", "DPD 90+"]
+    
+    key_map = {{"M5": "m5_pos_inr", "M6": "m6_pos_pct", "M7": "m7_count", "M8": "m8_count_pct"}}
+    label_map = {{"M5": "POS Transition (₹ Cr)", "M6": "POS Transition (%)", "M7": "Loan Count Transition", "M8": "Loan Count Transition (%)"}}
+    data_key = key_map.get(mid, list(key_map.values())[0])
+    chart_label = label_map.get(mid, mid)
+    
+    raw = data.get(data_key, {{}})
+    periods = data.get("periods", [])
+    
+    # Detect if raw is multi-period or single-period
+    def is_multi_period(raw_data):
+        if not isinstance(raw_data, dict) or not raw_data:
+            return False
+        first_val = list(raw_data.values())[0]
+        if isinstance(first_val, dict):
+            inner_val = list(first_val.values())[0]
+            return isinstance(inner_val, dict)
+        return False
+    
+    if not periods and is_multi_period(raw):
+        periods = sorted(raw.keys())
+    
+    def get_matrix(raw_data, period=None):
+        if period and period in raw_data:
+            mat = raw_data[period]
+        elif is_multi_period(raw_data):
+            mat = raw_data[sorted(raw_data.keys())[-1]]
+        else:
+            mat = raw_data
+        z = []
+        for fb in bucket_order:
+            row = []
+            for tb in bucket_order:
+                val = 0
+                if isinstance(mat, dict) and fb in mat and isinstance(mat[fb], dict):
+                    val = mat[fb].get(tb, 0)
+                row.append(float(val) if val else 0)
+            z.append(row)
+        return z
+    
+    def fmt_val(v):
+        if 'inr' in data_key:
+            return f"₹{{v/1e7:.2f}} Cr"
+        elif 'pct' in data_key:
+            return f"{{v:.1f}}%"
+        else:
+            return f"{{int(v)}}"
+    
+    if periods and len(periods) > 1:
+        # Multi-period: create one heatmap trace per period, use slider
+        fig = go.Figure()
+        for i, period in enumerate(periods):
+            z = get_matrix(raw, period)
+            text = [[fmt_val(v) for v in row] for row in z]
+            fig.add_trace(go.Heatmap(
+                z=z, x=bucket_order, y=bucket_order,
+                text=text, texttemplate="%{{text}}",
+                colorscale=[[0, '#16213e'], [0.5, '#f59e0b'], [1, '#ef4444']],
+                showscale=(i == len(periods) - 1),
+                visible=(i == len(periods) - 1),
+                hovertemplate='From: %{{y}}<br>To: %{{x}}<br>Value: %{{text}}<extra></extra>'
+            ))
+        
+        # Period selector dropdown (show last 12 periods max)
+        show_periods = periods[-12:] if len(periods) > 12 else periods
+        offset = len(periods) - len(show_periods)
+        buttons = []
+        for i, period in enumerate(show_periods):
+            idx = offset + i
+            vis = [j == idx for j in range(len(periods))]
+            buttons.append(dict(label=str(period), method='update',
+                               args=[{{'visible': vis}}, {{'title': dict(text=f'<b>{{mid}} — {{chart_label}}</b> ({{period}})')}}]))
+        fig.update_layout(
+            updatemenus=[dict(type='dropdown', direction='down', x=1.0, y=1.15, xanchor='right',
+                             showactive=True, buttons=buttons,
+                             bgcolor='#2a2a4a', bordercolor='#3b82f6', font=dict(color='#e0e0e0'))]
+        )
+        latest = periods[-1]
+    else:
+        # Single period
+        period = periods[0] if periods else None
+        z = get_matrix(raw, period)
+        text = [[fmt_val(v) for v in row] for row in z]
+        fig = go.Figure(go.Heatmap(
+            z=z, x=bucket_order, y=bucket_order,
+            text=text, texttemplate="%{{text}}",
+            colorscale=[[0, '#16213e'], [0.5, '#f59e0b'], [1, '#ef4444']],
+            showscale=True,
+            hovertemplate='From: %{{y}}<br>To: %{{x}}<br>Value: %{{text}}<extra></extra>'
+        ))
+        latest = period or "Latest"
+    
+    fig.update_layout(
+        title=dict(text=f'<b>{{mid}} — {{chart_label}}</b> ({{latest}})', x=0.02),
+        xaxis=dict(title='To Bucket', side='bottom', type='category'),
+        yaxis=dict(title='From Bucket', autorange='reversed', type='category'),
+        height=600, width=1000,
+    )
+
+- M9 (Vintage Cohort Curves): Multi-line chart with COHORT SELECTOR.
+  The data dict has keys: cohorts (list), max_mob (int), vintage_data (list of dicts).
+  Each dict in vintage_data has: cohort, mob, repay_pct.
+  
+  CRITICAL RULES for M9:
+  1. Group vintage_data by cohort to get one line per cohort (X=mob, Y=repay_pct).
+  2. Sort cohorts chronologically, take the most recent 12.
+  3. Add a COHORT SELECTOR using Plotly updatemenus dropdown that lets the user
+     toggle which cohorts are visible: "All Cohorts", "Last 4", "Last 8", "Last 12".
+  4. Use a viridis-like color progression across cohorts.
+  5. Include a legend and hovertemplate showing cohort + MOB + repay_pct.
+  
+  Build the chart EXACTLY like this:
+  
+    data = metrics_data["M9"]
+    vintage_data = data.get("vintage_data", [])
+    
+    # Group by cohort
+    from collections import defaultdict
+    cohort_series = defaultdict(lambda: {{"mobs": [], "pcts": []}})
+    for row in vintage_data:
+        c = row.get("cohort", "")
+        m = row.get("mob", 0)
+        p = row.get("repay_pct", row.get("repayment_pct", row.get("cumulative_repay_pct", 0)))
+        if c and isinstance(m, (int, float)):
+            cohort_series[c]["mobs"].append(m)
+            cohort_series[c]["pcts"].append(p if p else 0)
+    
+    # Sort cohorts and take recent 12
+    sorted_cohorts = sorted(cohort_series.keys())
+    recent_12 = sorted_cohorts[-12:] if len(sorted_cohorts) > 12 else sorted_cohorts
+    
+    # Color scale (viridis-like)
+    n = len(recent_12)
+    colors = px.colors.sample_colorscale("Viridis", [i/(max(n-1,1)) for i in range(n)])
+    
+    fig = go.Figure()
+    for i, cohort in enumerate(recent_12):
+        s = cohort_series[cohort]
+        # Sort by MOB
+        pairs = sorted(zip(s["mobs"], s["pcts"]))
+        mobs = [p[0] for p in pairs]
+        pcts = [p[1] for p in pairs]
+        fig.add_trace(go.Scatter(
+            x=mobs, y=pcts, mode='lines+markers', name=cohort,
+            line=dict(color=colors[i], width=2),
+            marker=dict(size=4),
+            hovertemplate=f'Cohort: {{cohort}}<br>MOB: %{{{{x}}}}<br>Repayment: %{{{{y}}}}:.1f}}%<extra></extra>'
+        ))
+    
+    # Cohort selector dropdown: All, Last 4, Last 8, Last 12
+    all_vis = [True] * n
+    last4_vis = [(i >= n - 4) for i in range(n)]
+    last8_vis = [(i >= n - 8) for i in range(n)]
+    last12_vis = [True] * n  # already limited to 12
+    
+    fig.update_layout(
+        updatemenus=[dict(
+            type='dropdown', direction='down',
+            x=1.0, y=1.15, xanchor='right',
+            showactive=True,
+            buttons=[
+                dict(label='All Cohorts',  method='update', args=[{{'visible': all_vis}}]),
+                dict(label='Last 4',       method='update', args=[{{'visible': last4_vis}}]),
+                dict(label='Last 8',       method='update', args=[{{'visible': last8_vis}}]),
+            ],
+            bgcolor='#2a2a4a', bordercolor='#3b82f6',
+            font=dict(color='#e0e0e0', size=12)
+        )],
+        title=dict(text='<b>M9 — Vintage Cohort Repayment Curves</b><br>'
+                        '<span style="font-size:12px;color:#8892a4">Cumulative Principal Repayment % by Months on Book</span>',
+                   x=0.02),
+        xaxis=dict(title='Months on Book (MOB)', gridcolor='rgba(42,42,74,0.3)', dtick=3),
+        yaxis=dict(title='Cumulative Repayment %', gridcolor='rgba(42,42,74,0.3)',
+                   ticksuffix='%'),
+        legend=dict(title=dict(text='Cohort'), orientation='h', yanchor='bottom', y=1.02,
+                    xanchor='right', x=1, bgcolor='rgba(26,26,46,0.8)'),
+        height=650, width=1100, hovermode='x unified',
+    )
 
 DATA HANDLING RULES:
 - metrics_data[metric_id] is the raw result dict. Inspect its keys dynamically.
 - NEVER assume specific key names — always print(list(data.keys())) first, then adapt.
-  For time series data (M3), the month field might be called 'month', 'observation_month',
-  'period', 'date', etc. Check dynamically: look for keys containing 'month', 'date', 'period'.
+  For time series data (M3), use 'monthly_recent' key (last 24 months) for the monthly trace,
+  and 'quarterly_recent' key (last 8 quarters) for the quarterly trace.
+  Do NOT use 'time_series' (full history) for the chart axes.
   For list-of-dicts, inspect the first item's keys to discover field names.
-- Values may be nested dicts like {key: {count: N, percentage: P}} — extract the
+- Values may be nested dicts like {{key: {{count: N, percentage: P}}}} — extract the
   numeric value (prefer 'count' for bar charts, 'percentage' for pies).
 - Lists of dicts: iterate to extract labels and values.
 - Always handle missing keys gracefully with .get() defaults.

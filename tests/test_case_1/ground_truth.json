@@ -1,0 +1,29 @@
+{
+  "M1": {
+    "total_pos_cr": 0.0,
+    "active_loan_count": 10,
+    "wair_pct": 12.0
+  },
+  "M2": {
+    "Current": 0.0,
+    "DPD 1-30": 0.0,
+    "DPD 31-60": 0.0,
+    "DPD 61-90": 0.0,
+    "DPD 90+": 0.0
+  },
+  "M3": {
+    "overall_ce_pct": 100.0,
+    "description": "100% CE \u2014 every EMI paid in full on time"
+  },
+  "M4": {
+    "Current": 100.0
+  },
+  "M5_M6_M7_M8": {
+    "description": "All loans stay Current \u2192 Current\u2192Current = 100%",
+    "current_to_current_pct": 100.0
+  },
+  "M9": {
+    "description": "Single vintage (2025-Q2), 10 loans, no delinquency",
+    "cohort_count": 1
+  }
+}

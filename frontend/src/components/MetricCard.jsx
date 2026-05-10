@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { ChevronDown, ChevronUp, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { useState, useRef, useMemo, useCallback } from 'react';
+import { CheckCircle, XCircle, AlertTriangle, ExternalLink } from 'lucide-react';
 
 export default function MetricCard({ metric, chart }) {
   const [expanded, setExpanded] = useState(false);
@@ -12,12 +12,10 @@ export default function MetricCard({ metric, chart }) {
   };
 
   const hasChart = chart && !chart.error && chart.html_snippet;
-  const hasPlotlyJson = chart && !chart.error && chart.plotly_json;
 
   // Build a self-contained HTML document for the iframe
   const chartHtml = useMemo(() => {
     if (!hasChart) return null;
-    // Strip integrity/crossorigin attrs so Plotly CDN loads in sandboxed iframe
     const snippet = chart.html_snippet
       .replace(/\s*integrity="[^"]*"/g, '')
       .replace(/\s*crossorigin="[^"]*"/g, '')
@@ -30,7 +28,27 @@ export default function MetricCard({ metric, chart }) {
 </head><body>${snippet}</body></html>`;
   }, [chart, hasChart]);
 
-  // Reason for non-computable metrics
+  // Open the chart in a new browser tab as a standalone full-page HTML
+  const openInNewPage = useCallback(() => {
+    if (!chartHtml) return;
+    // Make it look good full-screen: force responsive sizing
+    const fullPageHtml = chartHtml
+      .replace('overflow:auto', 'overflow:hidden')
+      .replace(
+        '</style>',
+        `
+.js-plotly-plot,.plot-container,.svg-container{width:100vw!important;height:100vh!important}
+.plotly-graph-div{width:100vw!important;height:100vh!important}
+</style>`,
+      );
+    const blob = new Blob([fullPageHtml], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const win  = window.open(url, '_blank');
+    // Revoke the object URL after the tab has loaded to free memory
+    if (win) win.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+    else URL.revokeObjectURL(url); // popup blocked fallback
+  }, [chartHtml]);
+
   const reason = metric.status !== 'ok'
     ? metric.data?.reason || metric.data?.error || metric.llm_insight || 'Not available'
     : null;
@@ -73,12 +91,22 @@ export default function MetricCard({ metric, chart }) {
       {/* Interactive chart */}
       {hasChart && (
         <div className="chart-wrapper">
+          <div className="chart-toolbar">
+            <button
+              className="chart-open-btn"
+              onClick={openInNewPage}
+              title="Open chart in new tab (full screen)"
+            >
+              <ExternalLink size={13} />
+              Open in new page
+            </button>
+          </div>
           <iframe
             ref={iframeRef}
             srcDoc={chartHtml}
             title={`${metric.metric_id} chart`}
             sandbox="allow-scripts"
-            style={{ width: '100%', minHeight: 420, border: 'none', borderRadius: 8 }}
+            style={{ width: '100%', minHeight: 420, border: 'none', borderRadius: '0 0 8px 8px' }}
           />
         </div>
       )}

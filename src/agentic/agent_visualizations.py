@@ -50,7 +50,9 @@ def generate_visualizations(state: AgentState) -> dict:
         }
 
     # Collect only successful metric data
+    # Store both truncated (for prompt) and full (for execution) data
     metrics_data = {}
+    metrics_data_full = {}  # full data for exec namespace
     for mid, m in metrics.items():
         if m.get("status") == "ok" and m.get("data"):
             data = m["data"]
@@ -60,6 +62,10 @@ def generate_visualizations(state: AgentState) -> dict:
             metrics_data[mid] = {
                 "name": m["name"],
                 "data": _truncate_for_prompt(data),
+            }
+            metrics_data_full[mid] = {
+                "name": m["name"],
+                "data": data,
             }
 
     if not metrics_data:
@@ -79,7 +85,7 @@ def generate_visualizations(state: AgentState) -> dict:
     step, t0 = log_step_start(AGENT, f"Individual chart generation for {len(metrics_data)} metrics")
     for mid in sorted(metrics_data.keys()):
         try:
-            chart = _generate_single(llm, mid, metrics_data[mid])
+            chart = _generate_single(llm, mid, metrics_data[mid], metrics_data_full[mid])
             if chart and "error" not in chart:
                 all_charts[mid] = chart
                 log_success(AGENT, f"  {mid}: OK")
@@ -119,8 +125,13 @@ def generate_visualizations(state: AgentState) -> dict:
 #  Internal helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _generate_single(llm, metric_id: str, mdata: dict) -> dict | None:
-    """Ask LLM to generate Plotly code for a single metric."""
+_MAX_VIZ_RETRIES = 5  # up to 5 self-correction attempts after the first try
+
+
+def _generate_single(llm, metric_id: str, mdata: dict, mdata_full: dict | None = None) -> dict | None:
+    """Ask LLM to generate Plotly code for a single metric, with self-correction retries."""
+    # Use truncated data for prompt, full data for execution
+    exec_mdata = mdata_full if mdata_full is not None else mdata
     data_summary = _build_data_summary({metric_id: mdata})
 
     prompt = f"""Generate Plotly code for ONE metric only: {metric_id} — {mdata['name']}.
@@ -138,8 +149,41 @@ def _generate_single(llm, metric_id: str, mdata: dict) -> dict | None:
     response = llm.invoke(messages)
     code = _extract_code(extract_text(response))
 
-    charts = _execute_viz_code(code, {metric_id: mdata})
-    return charts.get(metric_id)
+    last_error = None
+    for attempt in range(1 + _MAX_VIZ_RETRIES):
+        try:
+            charts = _execute_viz_code(code, {metric_id: exec_mdata})
+            result = charts.get(metric_id)
+            if result and "error" not in result:
+                if attempt > 0:
+                    log_info(AGENT, f"  {metric_id}: fixed after {attempt} retry(ies)")
+                return result
+            last_error = result.get("error", "Unknown error") if result else "No figure produced"
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}\n{traceback.format_exc()[-600:]}"
+
+        if attempt < _MAX_VIZ_RETRIES:
+            log_warn(AGENT, f"  {metric_id}: attempt {attempt + 1} failed ({last_error[:120]}), asking LLM to fix...")
+            fix_messages = [
+                SystemMessage(content=VIZ_SYSTEM),
+                HumanMessage(content=prompt),
+                HumanMessage(content=f"""The code you generated produced this error:
+
+ERROR: {last_error}
+
+FAILING CODE:
+```python
+{code}
+```
+
+Fix the code so it runs without errors and sets result["{metric_id}"] = fig correctly.
+Return ONLY corrected executable Python code, no markdown fences."""),
+            ]
+            fix_response = llm.invoke(fix_messages)
+            code = _extract_code(extract_text(fix_response))
+
+    log_error(AGENT, f"  {metric_id}: all {1 + _MAX_VIZ_RETRIES} attempts failed. Last error: {last_error[:200]}")
+    return {"error": last_error}
 
 
 def _execute_viz_code(code: str, metrics_data: dict) -> dict:
