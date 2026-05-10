@@ -2,6 +2,12 @@
 
 A full-stack agentic application that autonomously analyses loan portfolio CSV data from Indian NBFCs. Upload CSVs through a React web UI, watch real-time agent progress via Server-Sent Events, and get computed financial metrics with interactive Plotly charts — all powered by **Google Gemini + LangGraph**.
 
+## Demo
+
+<video src="demo video.mp4" controls width="100%"></video>
+
+> If the video doesn't play inline, [download it here](demo%20video.mp4).
+
 ## What It Does
 
 1. **Upload CSVs** via the React frontend (drag-and-drop or file picker)
