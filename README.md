@@ -12,42 +12,90 @@ A full-stack agentic application that autonomously analyses loan portfolio CSV d
 
 ## System Architecture
 
-```
-Browser (React + Vite)
-        │  upload CSVs      POST /api/upload
-        │  stream analysis   POST /api/analyze/stream
-        │  ask questions     POST /api/chat
-        ▼
-FastAPI Backend  (src/api.py)
-        │
-        ▼
-LangGraph State Machine  (src/agentic/graph.py)
-  ┌──────────────────────────────────────────────────────────┐
-  │  SchemaDiscovery → DataValidation → MetricComputation   │
-  │                                         │               │
-  │                              ┌──────────▼──────────┐    │
-  │                              │   Visualization     │    │
-  │                              └──────────┬──────────┘    │
-  │                                         │               │
-  │                              ┌──────────▼──────────┐    │
-  │                              │   FinalReport       │    │
-  │                              └─────────────────────┘    │
-  └──────────────────────────────────────────────────────────┘
-        │
-        ▼
-  Chat Agent  (src/agentic/agent_chat.py)
-    ← Answers user questions about the analysed portfolio
+```mermaid
+graph TB
+    %% ── Styling ──
+    classDef frontend fill:#667eea,stroke:#5a67d8,color:#fff,stroke-width:2px,rx:12,ry:12
+    classDef api fill:#f6ad55,stroke:#dd6b20,color:#fff,stroke-width:2px,rx:10,ry:10
+    classDef agent fill:#68d391,stroke:#38a169,color:#1a202c,stroke-width:2px,rx:8,ry:8
+    classDef llm fill:#fc8181,stroke:#e53e3e,color:#fff,stroke-width:2px,rx:15,ry:15
+    classDef data fill:#b794f4,stroke:#805ad5,color:#fff,stroke-width:2px,rx:8,ry:8
+    classDef output fill:#4fd1c5,stroke:#319795,color:#1a202c,stroke-width:2px,rx:8,ry:8
+    classDef chat fill:#f687b3,stroke:#d53f8c,color:#fff,stroke-width:2px,rx:12,ry:12
+
+    %% ── Frontend Layer ──
+    USER["👤 User"]:::frontend
+    UI["⚛️ React + Vite Frontend<br/>Upload · Progress · Dashboard · Chat"]:::frontend
+
+    %% ── API Layer ──
+    API["⚡ FastAPI Backend<br/>/upload · /analyze/stream · /chat · /health"]:::api
+
+    %% ── Data ──
+    CSV[("📁 CSV Files<br/>Borrowers · Loans · Transactions<br/>Collateral · Collections")]:::data
+
+    %% ── LangGraph Pipeline ──
+    subgraph PIPELINE ["🔗 LangGraph Agentic Pipeline"]
+        direction TB
+        S1["🔍 Schema Discovery<br/>Profile columns · Classify domains<br/>Map to canonical fields"]:::agent
+        S2["✅ Data Validation<br/>Quality stats · Null analysis<br/>Referential integrity"]:::agent
+        S3{"🚦 Pass / Halt?"}:::agent
+        S4["📊 Metric Computation<br/>LLM generates pandas code<br/>Self-corrects up to 3 retries"]:::agent
+        S5["🎨 Visualization<br/>LLM generates Plotly charts<br/>Self-corrects up to 5 retries"]:::agent
+        S6["📋 Final Report<br/>Aggregate all results<br/>into structured JSON"]:::agent
+    end
+
+    %% ── LLM ──
+    LLM(("🤖 Google Gemini<br/>LLM Engine")):::llm
+
+    %% ── Chat Agent ──
+    CHAT["💬 Chat Agent<br/>Natural-language Q&A<br/>about portfolio metrics"]:::chat
+
+    %% ── Outputs ──
+    METRICS["📈 9 Financial Metrics<br/>M1–M9: Summary · DPD · CE%<br/>Transitions · Vintage Cohorts"]:::output
+    CHARTS["📊 Interactive Plotly Charts<br/>Filters · Dropdowns · Toggles<br/>Hover · Zoom · Pan"]:::output
+
+    %% ── Connections ──
+    USER -->|"Upload CSVs"| UI
+    UI -->|"POST /upload"| API
+    UI -->|"POST /analyze/stream (SSE)"| API
+    UI -->|"POST /chat"| API
+    API -->|"Save files"| CSV
+    API -->|"Start pipeline"| S1
+    CSV -.->|"Read data"| S1
+    S1 -->|"Schema mapped"| S2
+    S2 --> S3
+    S3 -->|"✅ Pass"| S4
+    S3 -->|"❌ Halt"| API
+    S4 -->|"Metrics computed"| S5
+    S5 -->|"Charts generated"| S6
+    S6 -->|"JSON response"| API
+    API -->|"SSE events"| UI
+    API -->|"Route question"| CHAT
+    CHAT -->|"Answer"| API
+
+    %% ── LLM connections ──
+    LLM -.->|"Classify & map"| S1
+    LLM -.->|"Assess quality"| S2
+    LLM -.->|"Generate code"| S4
+    LLM -.->|"Generate charts"| S5
+    LLM -.->|"Answer questions"| CHAT
+
+    %% ── Output connections ──
+    S4 -.-> METRICS
+    S5 -.-> CHARTS
+    METRICS -.-> UI
+    CHARTS -.-> UI
 ```
 
 ### Agent Nodes
 
 | Agent | What it does |
 |-------|-------------|
-| **Schema Discovery** | Scans uploaded CSVs, profiles columns/dtypes/nulls, uses Gemini to classify file domains (loan/txn/borrower/collateral/collections) and map columns to canonical fields |
-| **Data Validation** | Loads full CSVs, computes quality stats (nulls, ranges, referential integrity); Gemini assesses pass / warn / halt |
-| **Metric Computation** | Gemini generates pandas code per metric; code executes on live DataFrames; self-corrects on failure (up to 3 retries) |
-| **Visualization** | Gemini generates interactive Plotly chart code per metric; self-corrects on rendering errors (up to 5 retries) |
-| **Chat Agent** | Answers natural-language questions about computed metrics using full portfolio context |
+| **🔍 Schema Discovery** | Scans uploaded CSVs, profiles columns/dtypes/nulls, uses Gemini to classify file domains (loan/txn/borrower/collateral/collections) and map columns to canonical fields |
+| **✅ Data Validation** | Loads full CSVs, computes quality stats (nulls, ranges, referential integrity); Gemini assesses pass / warn / halt |
+| **📊 Metric Computation** | Gemini generates pandas code per metric; code executes on live DataFrames; self-corrects on failure (up to 3 retries) |
+| **🎨 Visualization** | Gemini generates interactive Plotly chart code per metric; self-corrects on rendering errors (up to 5 retries) |
+| **💬 Chat Agent** | Answers natural-language questions about computed metrics using full portfolio context |
 
 ## Supported Metrics
 
