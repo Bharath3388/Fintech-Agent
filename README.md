@@ -219,18 +219,170 @@ Fintech-Agent/
 └── .env.example
 ```
 
-## Running Tests
+## Testing
+
+The project includes a comprehensive test suite with **3 synthetic datasets** and an **LLM-judged** validation framework that verifies all 9 financial metrics against pre-computed ground truth.
+
+### Quick Start
 
 ```bash
+# Ensure the backend is running on port 8000
 cd tests
-python run_tests.py
+python generate_test_data.py   # generates CSVs + ground_truth.json (one-time)
+python run_tests.py            # runs pipeline on all 3 datasets, LLM judges results
 ```
 
-The test runner:
-1. Generates 3 synthetic CSV datasets with known ground truth
-2. Runs each through the full pipeline
-3. Uses Gemini as an LLM judge to verify metric outputs against ground truth
-4. Reports PASS/FAIL for 38 individual checks
+### Test Architecture
+
+```mermaid
+graph LR
+    classDef gen fill:#b794f4,stroke:#805ad5,color:#fff,stroke-width:2px
+    classDef pipe fill:#68d391,stroke:#38a169,color:#1a202c,stroke-width:2px
+    classDef judge fill:#fc8181,stroke:#e53e3e,color:#fff,stroke-width:2px
+    classDef result fill:#4fd1c5,stroke:#319795,color:#1a202c,stroke-width:2px
+
+    GEN["🧪 generate_test_data.py<br/>3 synthetic datasets"]:::gen
+    CSV["📁 CSVs + ground_truth.json"]:::gen
+    PIPE["⚡ Full Pipeline<br/>POST /analyze"]:::pipe
+    JUDGE["🤖 Gemini LLM Judge<br/>Compares output vs ground truth"]:::judge
+    REPORT["📋 38/38 PASS<br/>Per-check results"]:::result
+
+    GEN --> CSV --> PIPE --> JUDGE --> REPORT
+```
+
+### How It Works
+
+1. **`generate_test_data.py`** creates 3 sets of 5 CSV files (Borrowers, Collateral, Loan Facilities, Payment Schedule Transactions, Collections) with deterministic data and writes a `ground_truth.json` alongside each set.
+
+2. **`run_tests.py`** sends each dataset to the running `/analyze` endpoint, then passes the pipeline output + ground truth + a list of checks to **Gemini** acting as a judge.
+
+3. The **LLM judge** evaluates each check with:
+   - **5% relative tolerance** for numeric comparisons
+   - **Semantic key matching** (handles different key names like `pos_crores` vs `amount_crore`)
+   - **Structural flexibility** (flat dict vs nested dict vs list of dicts)
+
+### Test Case 1 — Clean Portfolio
+
+| Property | Value |
+|----------|-------|
+| **Scenario** | 10 identical loans, all fully paid on time |
+| **Loans** | 10 × ₹10L, 12% rate, 12-month tenor |
+| **Disbursement** | 2025-04-01 |
+| **Observation** | 2026-03-31 (all 12 installments due and paid) |
+| **Expected POS** | ₹0 Cr (all principal repaid) |
+| **Expected CE** | 100% (every EMI paid on schedule) |
+| **DPD Distribution** | 100% Current |
+| **Transitions** | Current → Current = 100% |
+| **Vintage** | Single cohort (2025-Q2), no delinquency |
+
+**Checks (11):**
+
+| # | Check | What it verifies |
+|---|-------|-----------------|
+| 1 | M1 status is ok/partial | Portfolio summary computed |
+| 2 | M1 active count = 10 | All loans detected |
+| 3 | M1 WAIR ≈ 0% | POS = 0, so WAIR has no weight |
+| 4 | M2 status ok | DPD distribution computed |
+| 5 | M2 total POS ≈ 0 | All loans fully paid |
+| 6 | M3 status ok | CE time series computed |
+| 7 | M3 overall CE ≈ 100% | Perfect repayment |
+| 8 | M4 status ok | CE by DPD computed |
+| 9 | M5/M8 status ok | Transition matrices computed |
+| 10 | M9 status ok | Vintage analysis computed |
+| 11 | ≥ 3 charts generated | Visualizations work |
+
+### Test Case 2 — Stressed Portfolio
+
+| Property | Value |
+|----------|-------|
+| **Scenario** | 10 loans across all DPD buckets with varied payment behaviour |
+| **Loans** | 10 × ₹10L, 15% rate, 24-month tenor |
+| **Disbursement** | 2025-01-01 |
+| **Observation** | 2026-03-31 (15 of 24 installments due) |
+
+**Loan behaviours:**
+
+| Loans | Instalments Paid | DPD Bucket | Behaviour |
+|-------|-----------------|------------|-----------|
+| L1–L4 | 15/15 | Current | All paid on time |
+| L5–L6 | 14/15 | DPD 1-30 | Missed last instalment |
+| L7 | 13/15 | DPD 31-60 | Missed last 2 |
+| L8 | 12/15 | DPD 61-90 | Missed last 3 |
+| L9 | 11/15 | DPD 90+ (NPA) | Missed last 4 |
+| L10 | 0/15 | DPD 90+ (NPA) | Zero payments |
+
+**Expected transitions (Feb → Mar 2026):**
+
+| From | To | Count |
+|------|----|-------|
+| Current (6) | Current | 4 |
+| Current (6) | DPD 1-30 | 2 |
+| DPD 1-30 | DPD 31-60 | 1 |
+| DPD 31-60 | DPD 61-90 | 1 |
+| DPD 61-90 | DPD 90+ | 1 |
+| DPD 90+ | DPD 90+ | 1 |
+
+**Checks (17):**
+
+| # | Check | What it verifies |
+|---|-------|-----------------|
+| 1 | M1 status ok | Summary computed |
+| 2 | M1 active count = 10 | All loans detected |
+| 3 | M1 POS ≈ ground truth | Outstanding principal correct |
+| 4 | M1 WAIR ≈ 15% | Weighted avg rate (all same) |
+| 5–9 | M2 POS per DPD bucket | Each bucket matches ground truth |
+| 10 | M3 status ok | CE time series computed |
+| 11 | M3 overall CE ≈ ground truth | Mixed payment scenario |
+| 12 | M5/M8 status ok | Transition matrices computed |
+| 13 | Current→Current ≈ 66.67% | 4/6 stayed current |
+| 14 | Current→Current count ≈ 4 | Absolute count check |
+| 15 | M9 status ok | Vintage analysis computed |
+| 16 | ≥ 3 charts generated | Visualizations work |
+
+### Test Case 3 — Edge Cases
+
+| Property | Value |
+|----------|-------|
+| **Scenario** | 6 loans with extreme/boundary behaviours |
+| **Disbursement** | 2025-04-01 |
+| **Observation** | 2026-03-31 (all 12 installments due) |
+
+**Loan behaviours:**
+
+| Loan | Principal | Behaviour | Expected Outcome |
+|------|----------|-----------|------------------|
+| L1 | ₹5L | **Prepayment** — pays 150% of EMI | Current, faster paydown |
+| L2 | ₹5L | **Zero payment** — pays nothing | DPD 90+, full default |
+| L3 | ₹50 Cr | **Very large loan** — all paid on time | Tests scale handling |
+| L4 | ₹10K | **Very small loan** — all paid on time | Tests precision |
+| L5 | ₹5L | **Half payer** — pays 50% of EMI | DPD 90+, partial default |
+| L6 | ₹5L | **Late payer** — full EMI, 45 days late | DPD 31-60, CE = 100% |
+
+**Checks (10):**
+
+| # | Check | What it verifies |
+|---|-------|-----------------|
+| 1 | M1 status ok | Summary computed |
+| 2 | M1 active count = 6 | All loans detected |
+| 3 | M2 status ok | DPD distribution computed |
+| 4 | M2 DPD 90+ POS > 0 | Zero-pay and half-pay loans in bucket |
+| 5 | M3 status ok | CE time series computed |
+| 6 | M3 overall CE ≈ ground truth | Mix of over/under payment |
+| 7 | M3 CE between 50–110% | Sanity bounds check |
+| 8 | M3 has ≥ 1 month of data | Time series not empty |
+| 9 | M5/M8 status ok | Transition matrices computed |
+| 10 | ≥ 3 charts generated | Visualizations work |
+
+### Test Output
+
+```
+======================================================================
+  FINAL RESULT: 38/38 checks passed
+======================================================================
+  ✅ TC1_Clean:     11/11
+  ✅ TC2_Stressed:  17/17
+  ✅ TC3_EdgeCases: 10/10
+```
 
 ## Configuration
 
