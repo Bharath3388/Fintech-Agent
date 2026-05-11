@@ -1,8 +1,11 @@
 """
-Visualization Agent — LLM-Generated Interactive Charts (Plotly)
-================================================================
+Visualization Agent — LLM-Generated Interactive Charts (Plotly) — Parallel
+===========================================================================
 After metrics are computed, this agent asks Gemini to generate Plotly code
 that turns each metric's result data into interactive charts.
+
+Charts are generated in PARALLEL using ThreadPoolExecutor — each metric
+gets its own LLM instance and runs independently.
 
 No hardcoded chart logic — the LLM decides the chart design, layout,
 annotations and formatting based on the metric data and a style guide.
@@ -13,6 +16,7 @@ import os
 import json
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -36,8 +40,28 @@ AGENT = "Visualization-AI"
 OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "output_charts"))
 
 
+def _generate_chart_for_metric(mid: str, mdata: dict, mdata_full: dict) -> tuple[str, dict]:
+    """Generate a chart for a single metric. Thread-safe — uses its own LLM instance."""
+    llm = get_llm(temperature=0.0)
+    try:
+        chart = _generate_single(llm, mid, mdata, mdata_full)
+        if chart and "error" not in chart:
+            log_success(AGENT, f"  {mid}: OK")
+            return mid, chart
+        else:
+            log_warn(AGENT, f"  {mid}: failed")
+            return mid, chart or {"error": "No chart produced"}
+    except Exception as e:
+        log_error(AGENT, f"  {mid}: {e}")
+        return mid, {"error": str(e)}
+
+
 def generate_visualizations(state: AgentState) -> dict:
-    """LangGraph node: Use LLM to generate Plotly visualisation code for computed metrics."""
+    """LangGraph node: Use LLM to generate Plotly visualisation code for computed metrics.
+
+    Charts are generated in PARALLEL — each metric gets its own thread
+    with its own LLM connection.
+    """
     reset_steps(AGENT)
     log_banner(AGENT)
     t_total = time.time()
@@ -75,25 +99,30 @@ def generate_visualizations(state: AgentState) -> dict:
             "messages": [f"[{AGENT}] No data to visualize"],
         }
 
-    log_info(AGENT, f"Generating interactive charts for {len(metrics_data)} metrics: {list(metrics_data.keys())}")
+    log_info(AGENT, f"Generating interactive charts for {len(metrics_data)} metrics in PARALLEL: {list(metrics_data.keys())}")
 
-    llm = get_llm(temperature=0.0)
     all_charts: dict = {}
     all_messages: list[str] = []
 
-    # Generate charts individually for each metric
-    step, t0 = log_step_start(AGENT, f"Individual chart generation for {len(metrics_data)} metrics")
-    for mid in sorted(metrics_data.keys()):
-        try:
-            chart = _generate_single(llm, mid, metrics_data[mid], metrics_data_full[mid])
-            if chart and "error" not in chart:
-                all_charts[mid] = chart
-                log_success(AGENT, f"  {mid}: OK")
-            else:
-                log_warn(AGENT, f"  {mid}: failed")
-        except Exception as e:
-            log_error(AGENT, f"  {mid}: {e}")
-            all_charts[mid] = {"error": str(e)}
+    # Generate charts in PARALLEL for each metric
+    step, t0 = log_step_start(AGENT, f"Parallel chart generation for {len(metrics_data)} metrics")
+    with ThreadPoolExecutor(max_workers=len(metrics_data)) as executor:
+        future_to_mid = {}
+        for mid in sorted(metrics_data.keys()):
+            future = executor.submit(
+                _generate_chart_for_metric,
+                mid, metrics_data[mid], metrics_data_full[mid],
+            )
+            future_to_mid[future] = mid
+
+        for future in as_completed(future_to_mid):
+            mid = future_to_mid[future]
+            try:
+                result_mid, chart = future.result()
+                all_charts[result_mid] = chart
+            except Exception as e:
+                log_error(AGENT, f"  {mid}: thread crash — {e}")
+                all_charts[mid] = {"error": str(e)}
     log_step_end(AGENT, step, t0)
 
     # Save HTML files locally

@@ -163,7 +163,8 @@ def run_pipeline(csv_paths: list[str]):
     """Run the full agentic pipeline on the given CSV file paths."""
     log_banner(AGENT)
     log_info(AGENT, "Building LangGraph state graph...")
-    log_info(AGENT, "Nodes: discover_files → map_schema(LLM) → validate(LLM) → compute_metrics(LLM) → final_report")
+    log_info(AGENT, "Nodes: discover_files → map_schema(LLM) → validate(LLM) → compute_metrics(LLM‖) → visualizations(LLM‖) → final_report")
+    log_info(AGENT, "  ‖ = parallel execution (ThreadPoolExecutor)")
     log_info(AGENT, f"Input files: {[os.path.basename(p) for p in csv_paths]}")
     log_info(AGENT, "")
 
