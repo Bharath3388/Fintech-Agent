@@ -66,14 +66,39 @@ _M1_KEY_MAP = {
 }
 
 def _normalize_m1_keys(data: dict) -> dict:
-    """Standardize M1 result keys to canonical names."""
+    """Standardize M1 result keys to canonical names.
+    Handles both flat dict (legacy) and new yearly_data structure."""
     if not isinstance(data, dict):
         return data
+
+    # New yearly structure — normalize keys within nested dicts
+    if "yearly_data" in data or "overall" in data:
+        out = {}
+        if "yearly_data" in data:
+            out["yearly_data"] = [
+                {_M1_KEY_MAP.get(k.lower().strip(), k): v for k, v in row.items()}
+                for row in data["yearly_data"]
+            ]
+        if "years" in data:
+            out["years"] = data["years"]
+        if "overall" in data and isinstance(data["overall"], dict):
+            out["overall"] = {
+                _M1_KEY_MAP.get(k.lower().strip(), k): v
+                for k, v in data["overall"].items()
+            }
+        return out
+
+    # Legacy flat dict — convert to new structure
     out = {}
     for k, v in data.items():
         canonical = _M1_KEY_MAP.get(k.lower().strip(), k)
         out[canonical] = v
-    return out
+    # Wrap legacy flat result into the new structure for consistency
+    return {
+        "yearly_data": [],
+        "years": [],
+        "overall": out,
+    }
 
 
 def _compute_single_metric_group(

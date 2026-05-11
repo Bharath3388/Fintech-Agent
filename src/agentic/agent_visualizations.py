@@ -23,6 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.io as pio
+import plotly.subplots as sp
 
 from agentic.state import AgentState
 from agentic.llm_config import get_llm, extract_text
@@ -227,6 +228,8 @@ def _execute_viz_code(code: str, metrics_data: dict) -> dict:
         "go": go,
         "px": px,
         "pio": pio,
+        "sp": sp,
+        "make_subplots": sp.make_subplots,
         "pd": pd,
         "np": np,
         "json": json,
