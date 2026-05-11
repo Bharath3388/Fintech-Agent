@@ -80,10 +80,11 @@ def _save_and_encode(fig, output_dir: str | None, filename: str) -> dict:
 def chart_m1(data: dict, output_dir: str | None = None) -> dict:
     if not data or "error" in data:
         return {}
-    fig, ax = plt.subplots(figsize=(8, 0.6))  # will be resized below
-    ax.axis("off")
 
-    # Known pretty labels (order preserved); any extra keys get auto-labeled
+    # Extract overall data — works for both new yearly structure and legacy flat dict
+    overall = data.get("overall", data)
+    SKIP_KEYS = {"error", "reason", "metric_id", "name", "status", "yearly_data", "years", "overall"}
+
     KNOWN_LABELS = {
         "total_pos_cr": "Total POS (₹ Cr)",
         "total_pos": "Total POS (₹ Cr)",
@@ -95,14 +96,18 @@ def chart_m1(data: dict, output_dir: str | None = None) -> dict:
         "wtd_avg_rate": "Wtd. Avg. Interest Rate (%)",
         "weighted_avg_interest_rate": "Wtd. Avg. Interest Rate (%)",
         "weighted_average_interest_rate": "Wtd. Avg. Interest Rate (%)",
+        "wair_pct": "Wtd. Avg. Interest Rate (%)",
         "wtd_avg_tenor": "Wtd. Avg. Residual Tenor (months)",
         "weighted_avg_residual_tenor": "Wtd. Avg. Residual Tenor (months)",
         "weighted_average_residual_tenor": "Wtd. Avg. Residual Tenor (months)",
+        "wart_months": "Wtd. Avg. Residual Tenor (months)",
     }
-    SKIP_KEYS = {"error", "reason", "metric_id", "name", "status"}
+
+    fig, ax = plt.subplots(figsize=(8, 0.6))
+    ax.axis("off")
 
     rows = []
-    for key, val in data.items():
+    for key, val in overall.items():
         if key in SKIP_KEYS or val is None:
             continue
         label = KNOWN_LABELS.get(key, key.replace("_", " ").title())
@@ -116,7 +121,6 @@ def chart_m1(data: dict, output_dir: str | None = None) -> dict:
     if not rows:
         return {}
 
-    # Dynamically size the figure height based on row count
     fig_h = max(2.5, 0.6 * len(rows) + 1.5)
     fig.set_size_inches(8, fig_h)
 
@@ -135,7 +139,7 @@ def chart_m1(data: dict, output_dir: str | None = None) -> dict:
             cell.set_facecolor(DARK_FACE)
             cell.set_text_props(color=TEXT_COLOR)
 
-    fig.suptitle("Portfolio Summary", fontsize=16, fontweight="bold", y=0.98)
+    fig.suptitle("Portfolio Summary (Overall)", fontsize=16, fontweight="bold", y=0.98)
     return _save_and_encode(fig, output_dir, "m1_portfolio_summary.png")
 
 
@@ -213,36 +217,58 @@ def chart_m2(data: dict, output_dir: str | None = None) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  M3 — Collections Efficiency Time Series (Line Chart)
+#  M3 — Collections Efficiency Time Series (Grouped Bar + Line)
 # ═══════════════════════════════════════════════════════════════════════════
 def chart_m3(data: dict, output_dir: str | None = None) -> dict:
     if not data or "error" in data:
         return {}
-    fig, ax = plt.subplots(figsize=(14, 5))
 
-    ts = data.get("time_series", [])
+    ts = data.get("monthly_recent", data.get("time_series", []))
     if not ts:
-        plt.close(fig)
         return {}
 
+    fig, ax1 = plt.subplots(figsize=(16, 6))
+
     months = [t.get("month", t.get("period", "")) for t in ts]
+    emi_due = [t.get("emi_due", 0) / 1e7 for t in ts]      # Convert to Crores
+    collected = [t.get("collected", 0) / 1e7 for t in ts]   # Convert to Crores
     ce_pct = [t.get("ce_pct", t.get("CE%", 0)) for t in ts]
 
-    ax.plot(months, ce_pct, color=ACCENT_GREEN, marker="o", linewidth=2, markersize=4)
-    ax.fill_between(range(len(months)), ce_pct, alpha=0.15, color=ACCENT_GREEN)
+    x = np.arange(len(months))
+    width = 0.35
 
-    ax.axhline(y=100, color=ACCENT_ORANGE, linestyle="--", linewidth=1, alpha=0.5, label="100% target")
+    # Grouped bars on primary y-axis
+    bars1 = ax1.bar(x - width/2, emi_due, width, label="EMI Due (₹ Cr)",
+                    color="#4682B4", alpha=0.85)
+    bars2 = ax1.bar(x + width/2, collected, width, label="Collected (₹ Cr)",
+                    color="#2dd4bf", alpha=0.85)
 
-    ax.set_xlabel("Month", fontsize=12)
-    ax.set_ylabel("Collections Efficiency %", fontsize=12)
-    ax.set_title("Overall Collections Efficiency — Time Series", fontsize=16, fontweight="bold")
-    ax.legend(loc="lower right")
-    ax.grid(True, alpha=0.2)
+    ax1.set_xlabel("Month", fontsize=12)
+    ax1.set_ylabel("Amount (₹ Crore)", fontsize=12, color=TEXT_COLOR)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(months, rotation=45, ha="right", fontsize=8)
+    ax1.grid(axis="y", alpha=0.2)
 
-    if len(months) > 12:
-        ax.set_xticks(range(0, len(months), max(1, len(months) // 12)))
-    plt.xticks(rotation=45, ha="right")
+    # CE% line on secondary y-axis
+    ax2 = ax1.twinx()
+    ax2.plot(x, ce_pct, color=ACCENT_ORANGE, marker="o", linewidth=2, markersize=4,
+             label="CE %", zorder=5)
+    ax2.set_ylabel("Collections Efficiency %", fontsize=12, color=ACCENT_ORANGE)
+    ax2.tick_params(axis="y", labelcolor=ACCENT_ORANGE)
 
+    # Data labels on CE% line
+    for i, v in enumerate(ce_pct):
+        ax2.annotate(f"{v:.1f}%", (x[i], v), textcoords="offset points",
+                     xytext=(0, 8), ha="center", fontsize=7, color=ACCENT_ORANGE)
+
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
+
+    overall_ce = data.get("overall_ce_pct", 0)
+    fig.suptitle(f"Overall Collections Efficiency — Time Series (CE: {overall_ce:.2f}%)",
+                 fontsize=16, fontweight="bold", y=0.98)
     fig.tight_layout()
     return _save_and_encode(fig, output_dir, "m3_ce_time_series.png")
 

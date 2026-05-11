@@ -218,12 +218,12 @@ Use ONLY the column names from the schema mapping provided.
 If data required for a metric is not available, set result = {"error": "not_computable", "reason": "..."}."""
 
 
-METRIC_TASK_M1 = """Compute M1: Portfolio Summary Table
+METRIC_TASK_M1 = """Compute M1: Portfolio Summary Table — Year-by-Year Time Series
 
 Schema mapping:
 {schema_mapping}
 
-Generate Python code that computes these KPIs for ACTIVE loans:
+Generate Python code that computes these KPIs for ACTIVE loans, broken down by DISBURSEMENT YEAR:
 1. Total POS (Principal Outstanding) in Crores
 2. Interest Outstanding in Crores  
 3. Active Loan Count
@@ -232,16 +232,58 @@ Generate Python code that computes these KPIs for ACTIVE loans:
 
 The code should:
 - Filter for active loans (status in Active, Live, NPA — anything not Closed/Written Off)
+- Parse the disbursement_date column to extract the YEAR
 - Handle nulls gracefully
-- Print results clearly
-- Store results in a dict called 'result' with EXACTLY these keys:
+- For EACH year, compute all 5 KPIs
+- Also compute OVERALL totals across all years
+- Store results in a dict called 'result' with EXACTLY this structure:
+
+  # Per-year breakdown: list of dicts sorted by year ascending
+  yearly_data = []
+  for year in sorted(unique_years):
+      year_df = active_loans[active_loans['_disb_year'] == year]
+      pos = float(year_df[pos_col].sum()) / 1e7  # convert to Crores
+      interest = ...  # interest outstanding in Crores
+      count = len(year_df)
+      # WAIR: weighted average interest rate (weighted by POS)
+      wair = ...
+      # WART: weighted average residual tenor in months
+      wart = ...
+      yearly_data.append({{
+          "year": int(year),
+          "total_pos_cr": round(pos, 4),
+          "interest_outstanding_cr": round(interest, 4),
+          "active_loan_count": count,
+          "wair_pct": round(wair, 4),
+          "wart_months": round(wart, 4),
+      }})
+
+  # Overall totals
+  overall_pos = sum(d['total_pos_cr'] for d in yearly_data)
+  overall_interest = sum(d['interest_outstanding_cr'] for d in yearly_data)
+  overall_count = sum(d['active_loan_count'] for d in yearly_data)
+  # For overall WAIR/WART, recompute weighted averages across ALL active loans
+  overall_wair = ...
+  overall_wart = ...
+
   result = {{
-      "total_pos_cr": <float>,
-      "interest_outstanding_cr": <float>,
-      "active_loan_count": <int>,
-      "wair_pct": <float>,
-      "wart_months": <float>,
+      "yearly_data": yearly_data,
+      "years": [d["year"] for d in yearly_data],
+      "overall": {{
+          "total_pos_cr": round(overall_pos, 4),
+          "interest_outstanding_cr": round(overall_interest, 4),
+          "active_loan_count": overall_count,
+          "wair_pct": round(overall_wair, 4),
+          "wart_months": round(overall_wart, 4),
+      }}
   }}
+
+IMPORTANT:
+- Use disbursement_date (or equivalent mapped column) for year extraction
+- If disbursement_date is not available, try sanction_date or application_date
+- Convert date column: pd.to_datetime(loans_df[date_col], errors='coerce').dt.year
+- Assign to loans_df['_disb_year'] and drop NaN years before grouping
+- Print summary per year and overall
 
 Return ONLY executable Python code, no markdown fences."""
 
@@ -485,109 +527,261 @@ THEME SPECIFICATION (dark theme — match case study style):
 
 AVAILABLE IN YOUR NAMESPACE:
 - metrics_data: dict[str, Any]  — metric_id → result data (already computed)
-- go (plotly.graph_objects), px (plotly.express), pio (plotly.io)
+- go (plotly.graph_objects), px (plotly.express), pio (plotly.io), sp (plotly.subplots)
+- make_subplots (from plotly.subplots — available directly, no need to import)
 - pd (pandas), np (numpy), json
 - result: dict — YOU MUST populate this: result[metric_id] = go.Figure(...)
 
 CHART TYPE GUIDELINES:
-- M1 (Portfolio Summary): go.Table — ALWAYS create a 2-column table: column 1 = Metric label, column 2 = Value.
-  CRITICAL: cells.values MUST be a list of exactly 2 lists: [[label1, label2, ...], [value1, value2, ...]].
-  Use EXACTLY this pattern:
+- M1 (Portfolio Summary — Year-by-Year with Slider):
+  The data dict has keys: yearly_data (list of dicts per year), years (list of ints), overall (dict with totals).
+  If yearly_data is empty or missing, fall back to overall dict as a simple table.
+  
+  BUILD A GROUPED BAR CHART with a RANGE SLIDER that filters by year range.
+  The slider starts at the earliest year and goes up to "Overall" (all years combined).
+  
+  CRITICAL — Build EXACTLY like this:
+  
     d = metrics_data["M1"]
-    labels = ["Total POS (₹ Cr)", "Interest Outstanding (₹ Cr)", "Active Loan Count",
-              "Weighted Avg Interest Rate (%)", "Weighted Avg Residual Tenor (months)"]
-    values = [
-        f"{{d.get('total_pos_cr', 0):,.2f}}",
-        f"{{d.get('interest_outstanding_cr', 0):,.2f}}",
-        f"{{int(d.get('active_loan_count', 0)):,}}",
-        f"{{d.get('wair_pct', 0):.2f}}%",
-        f"{{d.get('wart_months', 0):.2f}} months",
-    ]
-    fig = go.Figure(go.Table(
-        header=dict(values=["<b>Metric</b>", "<b>Value</b>"], ...),
-        cells=dict(values=[labels, values], ...)
-    ))
+    yearly_data = d.get("yearly_data", [])
+    years = d.get("years", [])
+    overall = d.get("overall", {{}})
+    
+    if not yearly_data:
+        # Fallback: simple table for legacy flat data
+        labels = ["Total POS (₹ Cr)", "Interest Outstanding (₹ Cr)", "Active Loan Count",
+                  "Weighted Avg Interest Rate (%)", "Weighted Avg Residual Tenor (months)"]
+        vals = [
+            f"{{overall.get('total_pos_cr', 0):,.2f}}",
+            f"{{overall.get('interest_outstanding_cr', 0):,.2f}}",
+            f"{{int(overall.get('active_loan_count', 0)):,}}",
+            f"{{overall.get('wair_pct', 0):.2f}}%",
+            f"{{overall.get('wart_months', 0):.2f}} months",
+        ]
+        fig = go.Figure(go.Table(
+            header=dict(values=["<b>Metric</b>", "<b>Value</b>"],
+                        fill_color='#2563eb', font=dict(color='white', size=14), align='left'),
+            cells=dict(values=[labels, vals],
+                       fill_color='#16213e', font=dict(color='#e0e0e0', size=13), align='left', height=35)
+        ))
+        fig.update_layout(title=dict(text='<b>M1 — Portfolio Summary</b>', x=0.02),
+                          paper_bgcolor='#1a1a2e', height=350, width=900, margin=dict(l=20, r=20, t=60, b=20))
+        result["M1"] = fig
+    else:
+        # Build cumulative year data: slider position i shows years[0..i], last position = Overall
+        import plotly.subplots as sp
+        
+        kpi_keys = ["total_pos_cr", "interest_outstanding_cr", "active_loan_count", "wair_pct", "wart_months"]
+        kpi_labels = ["Total POS (₹ Cr)", "Interest Outstanding (₹ Cr)", "Active Loan Count",
+                      "Weighted Avg Interest Rate (%)", "Weighted Avg Residual Tenor (months)"]
+        
+        # Build slider steps: one for each year + one for "Overall"
+        slider_labels = [str(y) for y in years] + ["Overall"]
+        
+        # Pre-compute data for each slider position
+        # Position i (year) = data for ONLY that year
+        # Last position (Overall) = overall totals
+        all_frames = []
+        for i, year in enumerate(years):
+            row = yearly_data[i]
+            all_frames.append({{
+                "label": str(year),
+                "values": [
+                    f"{{row.get('total_pos_cr', 0):,.2f}}",
+                    f"{{row.get('interest_outstanding_cr', 0):,.2f}}",
+                    f"{{int(row.get('active_loan_count', 0)):,}}",
+                    f"{{row.get('wair_pct', 0):.2f}}%",
+                    f"{{row.get('wart_months', 0):.2f}} months",
+                ],
+                "raw": [row.get(k, 0) for k in kpi_keys],
+            }})
+        # Overall position
+        all_frames.append({{
+            "label": "Overall",
+            "values": [
+                f"{{overall.get('total_pos_cr', 0):,.2f}}",
+                f"{{overall.get('interest_outstanding_cr', 0):,.2f}}",
+                f"{{int(overall.get('active_loan_count', 0)):,}}",
+                f"{{overall.get('wair_pct', 0):.2f}}%",
+                f"{{overall.get('wart_months', 0):.2f}} months",
+            ],
+            "raw": [overall.get(k, 0) for k in kpi_keys],
+        }})
+        
+        # Create figure with one Table trace per slider position
+        fig = go.Figure()
+        
+        for idx, frame in enumerate(all_frames):
+            fig.add_trace(go.Table(
+                header=dict(
+                    values=["<b>Metric</b>", "<b>Value</b>"],
+                    fill_color='#2563eb',
+                    font=dict(color='white', size=14),
+                    align='left',
+                    line_color='#2a2a4a',
+                    height=40,
+                ),
+                cells=dict(
+                    values=[kpi_labels, frame["values"]],
+                    fill_color='#16213e',
+                    font=dict(color='#e0e0e0', size=13),
+                    align='left',
+                    line_color='#2a2a4a',
+                    height=35,
+                ),
+                visible=(idx == len(all_frames) - 1),  # Default: show Overall
+            ))
+        
+        # Build slider steps
+        steps = []
+        for idx, frame in enumerate(all_frames):
+            vis = [False] * len(all_frames)
+            vis[idx] = True
+            step_title = f"Year: {{frame['label']}}" if frame['label'] != "Overall" else "Overall (All Years)"
+            steps.append(dict(
+                method='update',
+                args=[{{'visible': vis}},
+                      {{'title': dict(text=f'<b>M1 — Portfolio Summary</b>  <span style="font-size:13px;color:#8892a4">({{step_title}})</span>', x=0.02)}}],
+                label=frame['label'],
+            ))
+        
+        sliders = [dict(
+            active=len(all_frames) - 1,
+            currentvalue=dict(prefix="Showing: ", font=dict(color='#e0e0e0', size=14)),
+            pad=dict(t=40, b=10),
+            steps=steps,
+            bgcolor='#2a2a4a',
+            activebgcolor='#3b82f6',
+            bordercolor='#3b82f6',
+            font=dict(color='#e0e0e0', size=11),
+            ticklen=4,
+        )]
+        
+        fig.update_layout(
+            sliders=sliders,
+            title=dict(text='<b>M1 — Portfolio Summary</b>  <span style="font-size:13px;color:#8892a4">(Overall (All Years))</span>', x=0.02),
+            paper_bgcolor='#1a1a2e',
+            font=dict(color='#e0e0e0'),
+            height=450,
+            width=950,
+            margin=dict(l=20, r=20, t=80, b=80),
+        )
+        result["M1"] = fig
 - M2 (POS by DPD Bucket): Horizontal bar chart.
   Show bucket names on Y, POS values on X, annotate with percentage.
   Format values in ₹ Crores.
-- M3 (Collections Efficiency Time Series): Line chart with MONTHLY/QUARTERLY toggle buttons.
+- M3 (Collections Efficiency Time Series): Grouped bar chart with CE% line overlay, MONTHLY/QUARTERLY toggle.
   The data dict has keys: monthly_recent (last 24 months), quarterly_recent (last 8 quarters),
   time_series (full history — do NOT use this for the chart), overall_ce_pct.
+  Each record has: month, emi_due, collected, ce_pct.
   
   CRITICAL RULES for this chart:
   1. xaxis MUST have type='category' (months and quarters are STRING labels like "2024-04" and
      "2024Q2" — Plotly will misinterpret them as dates without category type and the chart
      will appear EMPTY in Quarterly view).
-  2. Y-axis range must be DYNAMIC based on actual data (medium dataset has CE > 100% from
-     prepayments). Compute: y_max = max(105, max(all_ce_values) + 5).
-  3. Build exactly 4 traces in this order: monthly-line, monthly-target, quarterly-line, quarterly-target.
-  4. Default visibility: [True, True, False, False] (Monthly view active).
+  2. Use plotly.subplots.make_subplots with secondary_y=True for dual Y-axes.
+  3. Primary Y-axis (left) = INR Crore (for bars). Secondary Y-axis (right) = CE % (for line).
+  4. Build exactly 6 traces in this order:
+     [0] Monthly EMI Due bars, [1] Monthly Collected bars, [2] Monthly CE% line,
+     [3] Quarterly EMI Due bars, [4] Quarterly Collected bars, [5] Quarterly CE% line.
+  5. Default visibility: [True, True, True, False, False, False] (Monthly view active).
+  6. Bar colors: EMI Due = '#4682B4' (steel blue), Collected = '#2dd4bf' (teal green).
+  7. CE% line: color '#f59e0b' (orange), with data labels (textposition='top center').
+  8. Convert emi_due and collected to Crores (divide by 1e7).
   
   Build the chart EXACTLY like this:
   
+    from plotly.subplots import make_subplots
     data = metrics_data["M3"]
     monthly_data    = data.get("monthly_recent")    or data.get("time_series", [])
     quarterly_data  = data.get("quarterly_recent")  or []
   
-    # Extract x/y — month key may be 'month', 'period', 'observation_month', etc.
-    def extract_series(rows):
-        if not rows: return [], []
+    def extract_all(rows):
+        if not rows: return [], [], [], []
         mk = next((k for k in rows[0] if any(x in k.lower() for x in ['month','period','quarter','date'])), list(rows[0].keys())[0])
         xs = [r[mk] for r in rows]
-        ys = [r.get('ce_pct', r.get('collection_efficiency', r.get('ce', 0))) for r in rows]
-        return xs, ys
+        emi = [r.get('emi_due', 0) / 1e7 for r in rows]
+        coll = [r.get('collected', 0) / 1e7 for r in rows]
+        ce = [r.get('ce_pct', r.get('collection_efficiency', r.get('ce', 0))) for r in rows]
+        return xs, emi, coll, ce
   
-    m_x, m_y = extract_series(monthly_data)
-    q_x, q_y = extract_series(quarterly_data)
+    m_x, m_emi, m_coll, m_ce = extract_all(monthly_data)
+    q_x, q_emi, q_coll, q_ce = extract_all(quarterly_data)
   
-    fig = go.Figure()
-    # Trace 0: monthly (default visible)
+    fig = make_subplots(specs=[[{{"secondary_y": True}}]])
+  
+    # Trace 0: Monthly EMI Due bars (visible)
+    fig.add_trace(go.Bar(
+        x=m_x, y=m_emi, name='EMI Due (₹ Cr)',
+        marker_color='#4682B4', opacity=0.85, visible=True,
+        offsetgroup=0,
+    ), secondary_y=False)
+    # Trace 1: Monthly Collected bars (visible)
+    fig.add_trace(go.Bar(
+        x=m_x, y=m_coll, name='Collected (₹ Cr)',
+        marker_color='#2dd4bf', opacity=0.85, visible=True,
+        offsetgroup=1,
+    ), secondary_y=False)
+    # Trace 2: Monthly CE% line with data labels (visible)
     fig.add_trace(go.Scatter(
-        x=m_x, y=m_y, mode='lines+markers', name='Monthly CE%',
-        line=dict(color='#4ade80', width=2.5),
-        fill='tozeroy', fillcolor='rgba(74,222,128,0.12)',
-        marker=dict(size=5), visible=True
-    ))
-    # Trace 1: monthly 100% target line
+        x=m_x, y=m_ce, mode='lines+markers+text', name='CE %',
+        line=dict(color='#f59e0b', width=2.5),
+        marker=dict(size=5, color='#f59e0b'),
+        text=[f'{{v:.1f}}%' for v in m_ce], textposition='top center',
+        textfont=dict(size=9, color='#f59e0b'),
+        visible=True,
+    ), secondary_y=True)
+    # Trace 3: Quarterly EMI Due bars (hidden)
+    fig.add_trace(go.Bar(
+        x=q_x, y=q_emi, name='EMI Due (₹ Cr)',
+        marker_color='#4682B4', opacity=0.85, visible=False,
+        offsetgroup=0,
+    ), secondary_y=False)
+    # Trace 4: Quarterly Collected bars (hidden)
+    fig.add_trace(go.Bar(
+        x=q_x, y=q_coll, name='Collected (₹ Cr)',
+        marker_color='#2dd4bf', opacity=0.85, visible=False,
+        offsetgroup=1,
+    ), secondary_y=False)
+    # Trace 5: Quarterly CE% line with data labels (hidden)
     fig.add_trace(go.Scatter(
-        x=m_x, y=[100]*len(m_x), mode='lines', name='Target 100%',
-        line=dict(color='#f59e0b', width=1.5, dash='dash'), visible=True
-    ))
-    # Trace 2: quarterly (hidden by default)
-    fig.add_trace(go.Scatter(
-        x=q_x, y=q_y, mode='lines+markers', name='Quarterly CE%',
-        line=dict(color='#3b82f6', width=2.5),
-        fill='tozeroy', fillcolor='rgba(59,130,246,0.12)',
-        marker=dict(size=7, symbol='diamond'), visible=False
-    ))
-    # Trace 3: quarterly 100% target
-    fig.add_trace(go.Scatter(
-        x=q_x, y=[100]*len(q_x), mode='lines', name='Target 100%',
-        line=dict(color='#f59e0b', width=1.5, dash='dash'), visible=False
-    ))
+        x=q_x, y=q_ce, mode='lines+markers+text', name='CE %',
+        line=dict(color='#f59e0b', width=2.5),
+        marker=dict(size=7, symbol='diamond', color='#f59e0b'),
+        text=[f'{{v:.1f}}%' for v in q_ce], textposition='top center',
+        textfont=dict(size=10, color='#f59e0b'),
+        visible=False,
+    ), secondary_y=True)
   
     overall = data.get('overall_ce_pct', 0)
-    # Compute y-axis range from actual data (handle prepayment >100% cases)
-    all_y = [v for v in (m_y + q_y) if isinstance(v, (int, float)) and v > 0]
-    y_min = max(0, min(all_y) - 5) if all_y else 0
-    y_max = max(105, max(all_y) + 5) if all_y else 110
+    # Compute y-axis ranges
+    all_ce = [v for v in (m_ce + q_ce) if isinstance(v, (int, float)) and v > 0]
+    ce_min = max(0, min(all_ce) - 10) if all_ce else 0
+    ce_max = max(105, max(all_ce) + 5) if all_ce else 110
+    all_bar = [v for v in (m_emi + m_coll + q_emi + q_coll) if isinstance(v, (int, float))]
+    bar_max = max(all_bar) * 1.15 if all_bar else 100
+  
     fig.update_layout(
+        barmode='group',
         updatemenus=[dict(
             type='buttons', direction='right',
             x=0.0, y=1.12, xanchor='left',
             showactive=True,
             buttons=[
-                dict(label='Monthly',   method='update', args=[{{'visible': [True,  True,  False, False]}}, {{}}]),
-                dict(label='Quarterly', method='update', args=[{{'visible': [False, False, True,  True ]}}, {{}}]),
+                dict(label='Monthly',   method='update', args=[{{'visible': [True,  True,  True,  False, False, False]}}, {{}}]),
+                dict(label='Quarterly', method='update', args=[{{'visible': [False, False, False, True,  True,  True ]}}, {{}}]),
             ],
             bgcolor='#2a2a4a', bordercolor='#3b82f6',
             font=dict(color='#e0e0e0', size=13)
         )],
-        title=dict(text=f'<b>M3 \u2014 Collection Efficiency</b>  <span style="font-size:13px;color:#8892a4">(Overall: {{overall:.2f}}%)</span>', x=0.02),
+        title=dict(text=f'<b>M3 \u2014 Overall Collections Efficiency</b>  <span style="font-size:13px;color:#8892a4">(Overall CE: {{overall:.2f}}%)</span>', x=0.02),
         xaxis=dict(title='Period', tickangle=-35, type='category'),
-        yaxis=dict(title='CE %', range=[y_min, y_max]),
-        height=520, width=1050,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, font=dict(size=11)),
+        height=580, width=1100,
+        bargap=0.15, bargroupgap=0.05,
     )
+    fig.update_yaxes(title_text='Amount (₹ Crore)', range=[0, bar_max], secondary_y=False)
+    fig.update_yaxes(title_text='CE %', range=[ce_min, ce_max], secondary_y=True)
 - M4 (CE by DPD Bucket): Vertical bar chart with MONTH SELECTOR.
   The data dict has keys: months (list), latest_month, by_month (dict of month → bucket data), latest.
   If data has "by_month", use it for multi-month support.

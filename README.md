@@ -45,20 +45,25 @@ graph TB
         S1["🔍 Schema Discovery<br/>Profile columns · Classify domains<br/>Map to canonical fields"]:::agent
         S2["✅ Data Validation<br/>Quality stats · Null analysis<br/>Referential integrity"]:::agent
         S3{"🚦 Pass / Halt?"}:::agent
-        S4["📊 Metric Computation<br/>LLM generates pandas code<br/>Self-corrects up to 3 retries"]:::agent
-        S5["🎨 Visualization<br/>LLM generates Plotly charts<br/>Self-corrects up to 5 retries"]:::agent
+        S4["📊 Metric Computation<br/>LLM generates pandas code<br/>Self-corrects up to 3 retries<br/>Parallel M1–M9"]:::agent
+        S5["🎨 Visualization<br/>LLM generates Plotly charts<br/>Self-corrects up to 5 retries<br/>Parallel per metric"]:::agent
         S6["📋 Final Report<br/>Aggregate all results<br/>into structured JSON"]:::agent
     end
 
     %% ── LLM ──
     LLM(("🤖 Google Gemini<br/>LLM Engine")):::llm
 
-    %% ── Chat Agent ──
-    CHAT["💬 Chat Agent<br/>Natural-language Q&A<br/>about portfolio metrics"]:::chat
+    %% ── Chat Agent (Two-Layer Context) ──
+    subgraph CHATBLOCK ["💬 Chat Agent"]
+        direction TB
+        CL1["Layer 1: Compact Summary<br/>~1.5K tokens always loaded"]:::chat
+        CL2["Layer 2: Detail Retrieval<br/>Question-aware data slices"]:::chat
+        CL1 --> CL2
+    end
 
     %% ── Outputs ──
     METRICS["📈 9 Financial Metrics<br/>M1–M9: Summary · DPD · CE%<br/>Transitions · Vintage Cohorts"]:::output
-    CHARTS["📊 Interactive Plotly Charts<br/>Filters · Dropdowns · Toggles<br/>Hover · Zoom · Pan"]:::output
+    CHARTS["📊 Interactive Plotly Charts<br/>Sliders · Grouped Bars · Lines<br/>Dual Y-axes · Heatmaps"]:::output
 
     %% ── Connections ──
     USER -->|"Upload CSVs"| UI
@@ -76,15 +81,15 @@ graph TB
     S5 -->|"Charts generated"| S6
     S6 -->|"JSON response"| API
     API -->|"SSE events"| UI
-    API -->|"Route question"| CHAT
-    CHAT -->|"Answer"| API
+    API -->|"Route question"| CL1
+    CL2 -->|"Answer"| API
 
     %% ── LLM connections ──
     LLM -.->|"Classify & map"| S1
     LLM -.->|"Assess quality"| S2
     LLM -.->|"Generate code"| S4
     LLM -.->|"Generate charts"| S5
-    LLM -.->|"Answer questions"| CHAT
+    LLM -.->|"Answer questions"| CL2
 
     %% ── Output connections ──
     S4 -.-> METRICS
@@ -99,17 +104,17 @@ graph TB
 |-------|-------------|
 | **🔍 Schema Discovery** | Scans uploaded CSVs, profiles columns/dtypes/nulls, uses Gemini to classify file domains (loan/txn/borrower/collateral/collections) and map columns to canonical fields |
 | **✅ Data Validation** | Loads full CSVs, computes quality stats (nulls, ranges, referential integrity); Gemini assesses pass / warn / halt |
-| **📊 Metric Computation** | Gemini generates pandas code per metric; code executes on live DataFrames; self-corrects on failure (up to 3 retries) |
-| **🎨 Visualization** | Gemini generates interactive Plotly chart code per metric; self-corrects on rendering errors (up to 5 retries) |
-| **💬 Chat Agent** | Answers natural-language questions about computed metrics using full portfolio context |
+| **📊 Metric Computation** | Gemini generates pandas code per metric (M1–M9 in parallel via ThreadPoolExecutor); code executes on live DataFrames; self-corrects on failure (up to 3 retries) |
+| **🎨 Visualization** | Gemini generates interactive Plotly chart code per metric (parallel); supports sliders, grouped bars, dual Y-axes, heatmaps; self-corrects on rendering errors (up to 5 retries) |
+| **💬 Chat Agent** | Two-layer context strategy: compact summary (always) + question-aware detail retrieval (on-demand). Reduces 300K tokens to ~1.5-2.3K tokens per query while maintaining accuracy |
 
 ## Supported Metrics
 
 | ID | Metric | Chart Type | Interactive Controls |
 |----|--------|------------|---------------------|
-| M1 | Portfolio Summary — POS, active count, weighted avg rate & tenor | KPI Table | — |
+| M1 | Portfolio Summary — POS, active count, WAIR, WART | KPI Table (per-year) | Year slider + Overall view |
 | M2 | POS Distribution by DPD Bucket | Horizontal Bar | Hover, zoom |
-| M3 | Collections Efficiency Time Series | Line + Area | Monthly/Quarterly toggle |
+| M3 | Collection Efficiency Time Series | Grouped Bar + CE% Line (dual Y-axis) | Monthly/Quarterly toggle |
 | M4 | CE% by DPD Bucket | Vertical Bar | Month selector dropdown |
 | M5 | POS Transition Matrix (₹ Cr) | Heatmap | Period selector dropdown |
 | M6 | POS Transition Matrix (%) | Heatmap | Period selector dropdown |
@@ -124,7 +129,7 @@ graph TB
 - **Schema-agnostic**: Handles any CSV structure — the AI maps columns dynamically
 - **Two datasets tested**: Medium (84K loans, 2.3M transactions, 5 files) and Large (3 files, different schema) — both work without code changes
 - **Interactive charts**: All visualisations include Plotly interactivity — hover tooltips, zoom, pan, dropdown selectors, toggle buttons
-- **Chat Q&A**: Ask questions like "What is the NPA rate?" or "Which cohort has the best repayment?" after analysis
+- **Chat Q&A**: Two-layer context strategy — compact portfolio summary always loaded (~1.5K tokens), with question-aware detail retrieval for specific periods/metrics on demand. Handles portfolios with 100+ months of data without overflowing LLM context
 - **Self-correcting agents**: Metric and visualization code is auto-fixed by the LLM on failure
 - **Test suite**: 3 synthetic test datasets with ground truth, evaluated by an LLM judge (38/38 passing)
 
@@ -192,9 +197,10 @@ Fintech-Agent/
 │   │   ├── state.py                 # TypedDict state definitions
 │   │   ├── agent_schema.py          # Schema Discovery agent
 │   │   ├── agent_validation.py      # Data Validation agent
-│   │   ├── agent_metrics.py         # Metric Computation agent (LLM code-gen)
-│   │   ├── agent_visualizations.py  # Plotly chart generation (LLM code-gen)
-│   │   ├── agent_chat.py            # Chat Q&A agent
+│   │   ├── agent_metrics.py         # Metric Computation agent (LLM code-gen, parallel)
+│   │   ├── agent_visualizations.py  # Plotly chart generation (LLM code-gen, parallel)
+│   │   ├── agent_chat.py            # Chat Q&A agent (two-layer context)
+│   │   ├── charts.py               # Static Matplotlib chart fallbacks
 │   │   ├── llm_config.py            # Gemini model config
 │   │   └── prompts.py               # All LLM prompt templates
 │   └── core/
@@ -389,6 +395,43 @@ graph LR
   ✅ TC2_Stressed:  17/17
   ✅ TC3_EdgeCases: 10/10
 ```
+
+## Chat Agent — Two-Layer Context Strategy
+
+The chat agent answers natural-language questions about the analysed portfolio. Because metric data can be massive (300K+ tokens for 110 months of transition matrices, time series, and vintage curves), we use a **two-layer context strategy** that keeps every LLM call under ~2.5K tokens:
+
+```mermaid
+graph LR
+    classDef always fill:#68d391,stroke:#38a169,color:#1a202c,stroke-width:2px
+    classDef ondemand fill:#f6ad55,stroke:#dd6b20,color:#fff,stroke-width:2px
+    classDef llm fill:#fc8181,stroke:#e53e3e,color:#fff,stroke-width:2px
+
+    Q["❓ User Question"]
+    KW["🔑 Keyword Router<br/>Detect relevant metrics"]
+    L1["📋 Layer 1: Summary<br/>~1.5K tokens ALWAYS<br/>• M1 overall + year range<br/>• M2 DPD distribution<br/>• M3 latest 6 months + stats<br/>• M4 latest month only<br/>• M5 latest transition matrix<br/>• M9 cohort summaries"]:::always
+    L2["🔍 Layer 2: Detail<br/>ON-DEMAND only<br/>• M3 filtered time series<br/>• M4 specific months<br/>• M5 specific period matrices<br/>• M9 specific cohort MOB curves<br/>• M1 full yearly breakdown"]:::ondemand
+    CTX["📝 Combined Context<br/>Summary + Relevant Detail"]
+    LLM["🤖 Gemini LLM<br/>Generate Answer"]:::llm
+    ANS["💬 Answer"]
+
+    Q --> KW
+    KW -->|"Always"| L1
+    KW -->|"If metric detected"| L2
+    L1 --> CTX
+    L2 --> CTX
+    CTX --> LLM
+    LLM --> ANS
+```
+
+**Context size comparison:**
+
+| Scenario | Old approach | New approach | Reduction |
+|----------|-------------|-------------|-----------|
+| Raw metric JSON | ~303K tokens | — | — |
+| Generic question | ~303K tokens | ~1.5K tokens | **99.5%** |
+| Specific CE question | ~303K tokens | ~1.7K tokens | **99.4%** |
+| Transition matrix query | ~303K tokens | ~2.1K tokens | **99.3%** |
+| Vintage comparison | ~303K tokens | ~2.3K tokens | **99.2%** |
 
 ## Configuration
 
