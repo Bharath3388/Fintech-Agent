@@ -335,10 +335,42 @@ def compute_metrics(state: AgentState) -> dict:
     elapsed = time.time() - t_total
     log_success(AGENT, f"Metric computation complete in {elapsed:.2f}s")
 
+    # ── Save intermediate metric results as JSON ──────────────────────
+    _save_intermediate_metrics(metrics)
+
     return {
         "metrics": metrics,
         "messages": all_messages,
     }
+
+
+# ── Output directory for intermediate results ─────────────────────────────
+_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "output_charts"))
+
+
+def _save_intermediate_metrics(metrics: dict[str, MetricResultItem]) -> None:
+    """Save computed metric results as JSON before passing to the visualization agent."""
+    try:
+        os.makedirs(_OUTPUT_DIR, exist_ok=True)
+        out_path = os.path.join(_OUTPUT_DIR, "intermediate_metrics.json")
+
+        serializable = {}
+        for mid in sorted(metrics.keys()):
+            m = metrics[mid]
+            serializable[mid] = {
+                "metric_id": m["metric_id"],
+                "name": m["name"],
+                "status": m["status"],
+                "data": m.get("data"),
+                "llm_insight": m.get("llm_insight", ""),
+            }
+
+        with open(out_path, "w") as f:
+            json.dump(serializable, f, indent=2, default=str)
+
+        log_success(AGENT, f"Saved intermediate metrics → {out_path}")
+    except Exception as e:
+        log_warn(AGENT, f"Could not save intermediate metrics: {e}")
 
 
 def _build_schema_text(schema, dfs: dict) -> str:

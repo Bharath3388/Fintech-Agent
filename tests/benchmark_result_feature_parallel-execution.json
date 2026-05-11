@@ -1,0 +1,128 @@
+{
+  "branch": "feature/parallel-execution",
+  "total_time_seconds": 287.65,
+  "metrics_ok": 9,
+  "metrics_total": 9,
+  "charts_ok": 9,
+  "charts_total": 9,
+  "metric_statuses": {
+    "M1": "ok",
+    "M2": "ok",
+    "M3": "ok",
+    "M4": "ok",
+    "M5": "ok",
+    "M6": "ok",
+    "M7": "ok",
+    "M8": "ok",
+    "M9": "ok"
+  },
+  "metric_data": {
+    "M1": {
+      "total_pos_cr": 7776.553491423998,
+      "interest_outstanding_cr": 141.74366430500146,
+      "active_loan_count": 67431,
+      "wair_pct": 14.241896678674884,
+      "wart_months": 78.22250345439062
+    },
+    "M2": {
+      "type": "dict",
+      "keys": [
+        "metric_name",
+        "total_pos_crores",
+        "distribution",
+        "observation_date"
+      ],
+      "num_keys": 4
+    },
+    "M3": {
+      "type": "dict",
+      "keys": [
+        "time_series",
+        "monthly_recent",
+        "quarterly_recent",
+        "overall_ce_pct",
+        "total_emi_due",
+        "total_collected"
+      ],
+      "num_keys": 6
+    },
+    "M4": {
+      "type": "dict",
+      "keys": [
+        "months",
+        "latest_month",
+        "by_month",
+        "latest"
+      ],
+      "num_keys": 4
+    },
+    "M5": {
+      "type": "dict",
+      "keys": [
+        "periods",
+        "latest_period",
+        "m5_pos_inr",
+        "m6_pos_pct",
+        "m7_count",
+        "m8_count_pct"
+      ],
+      "num_keys": 6
+    },
+    "M6": {
+      "type": "dict",
+      "keys": [
+        "periods",
+        "latest_period",
+        "m5_pos_inr",
+        "m6_pos_pct",
+        "m7_count",
+        "m8_count_pct"
+      ],
+      "num_keys": 6
+    },
+    "M7": {
+      "type": "dict",
+      "keys": [
+        "periods",
+        "latest_period",
+        "m5_pos_inr",
+        "m6_pos_pct",
+        "m7_count",
+        "m8_count_pct"
+      ],
+      "num_keys": 6
+    },
+    "M8": {
+      "type": "dict",
+      "keys": [
+        "periods",
+        "latest_period",
+        "m5_pos_inr",
+        "m6_pos_pct",
+        "m7_count",
+        "m8_count_pct"
+      ],
+      "num_keys": 6
+    },
+    "M9": {
+      "type": "dict",
+      "keys": [
+        "cohorts",
+        "max_mob",
+        "vintage_data"
+      ],
+      "num_keys": 3
+    }
+  },
+  "chart_statuses": {
+    "M1": "ok",
+    "M2": "ok",
+    "M3": "ok",
+    "M4": "ok",
+    "M5": "ok",
+    "M6": "ok",
+    "M7": "ok",
+    "M8": "ok",
+    "M9": "ok"
+  }
+}
