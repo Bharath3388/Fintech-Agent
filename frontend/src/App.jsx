@@ -214,7 +214,7 @@ export default function App() {
         <Activity size={32} color="var(--accent-green)" />
         <div>
           <h1>Fintech Loan Portfolio Agent</h1>
-          <p className="subtitle">AI-Powered Analytics • Google Gemini • LangGraph</p>
+          <p className="subtitle">AI-Powered Analytics </p>
         </div>
       </header>
 

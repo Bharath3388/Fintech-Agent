@@ -670,6 +670,13 @@ CHART TYPE GUIDELINES:
 - M2 (POS by DPD Bucket): Horizontal bar chart.
   Show bucket names on Y, POS values on X, annotate with percentage.
   Format values in ₹ Crores.
+  
+  CRITICAL — always set these to prevent label overflow on the longest bar:
+    fig.update_traces(cliponaxis=False)
+    fig.update_layout(margin=dict(l=20, r=180, t=80, b=60))
+  
+  Use textposition='outside' for all bar labels. The right margin of 180px ensures
+  the label for the longest bar (e.g. "Current") is never clipped at the chart edge.
 - M3 (Collections Efficiency Time Series): Grouped bar chart with CE% line overlay, MONTHLY/QUARTERLY toggle.
   The data dict has keys: monthly_recent (last 24 months), quarterly_recent (last 8 quarters),
   time_series (full history — do NOT use this for the chart), overall_ce_pct.

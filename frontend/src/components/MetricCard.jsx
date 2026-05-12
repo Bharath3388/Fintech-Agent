@@ -22,6 +22,7 @@ export default function MetricCard({ metric, chart }) {
       .replace(/width:\s*\d+px/g, 'width:100%');
     return `<!DOCTYPE html>
 <html><head>
+<meta charset="UTF-8">
 <style>body{margin:0;padding:0;background:#1a1a2e;overflow:auto}
 .js-plotly-plot,.plot-container{width:100%!important}
 .svg-container{width:100%!important}</style>
