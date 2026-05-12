@@ -159,8 +159,21 @@ def load_and_validate(state: AgentState) -> dict:
         if fname and fname in profiles:
             fp = profiles[fname]["filepath"]
             log_info(AGENT, f"Loading {key} file: {fname}")
-            _dataframes[key] = pd.read_csv(fp, low_memory=False)
-            log_info(AGENT, f"  Loaded {len(_dataframes[key]):,} {key} records")
+            df = pd.read_csv(fp, low_memory=False)
+            # ── Memory optimisation: downcast numeric types & categorise strings ──
+            for col in df.columns:
+                col_dtype = df[col].dtype
+                if col_dtype == "float64":
+                    df[col] = pd.to_numeric(df[col], downcast="float")
+                elif col_dtype == "int64":
+                    df[col] = pd.to_numeric(df[col], downcast="integer")
+                elif col_dtype == "object":
+                    # Convert low-cardinality string columns to category
+                    if df[col].nunique() < min(500, len(df) // 2):
+                        df[col] = df[col].astype("category")
+            _dataframes[key] = df
+            mem_mb = df.memory_usage(deep=True).sum() / (1024 ** 2)
+            log_info(AGENT, f"  Loaded {len(df):,} {key} records ({mem_mb:.0f} MB)")
 
     log_step_end(AGENT, step, t0, f"Loaded {len(_dataframes)} datasets")
 

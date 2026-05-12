@@ -189,6 +189,10 @@ def run_pipeline(csv_paths: list[str]):
     # Run the graph
     final_state = app.invoke(initial_state)
 
+    # ── Free DataFrames to release memory ─────────────────────────────
+    from agentic.agent_validation import _dataframes
+    _dataframes.clear()
+
     elapsed = time.time() - t0
     log_banner(AGENT)
     log_success(AGENT, f"Agentic pipeline complete in {elapsed:.2f}s")

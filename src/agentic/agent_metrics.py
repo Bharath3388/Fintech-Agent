@@ -138,9 +138,11 @@ def _compute_single_metric_group(
         return metrics, messages
 
     # ── Build exec namespace with all available DataFrames ─────────
-    loans_df = dfs.get("loans").copy() if dfs.get("loans") is not None else None
-    txns_df = dfs.get("transactions").copy() if dfs.get("transactions") is not None else None
-    extra_dfs = {k: v.copy() for k, v in dfs.items()
+    # Share read-only references instead of deep-copying per thread
+    # to avoid N × 2GB memory explosion with parallel workers.
+    loans_df = dfs.get("loans")
+    txns_df = dfs.get("transactions")
+    extra_dfs = {k: v for k, v in dfs.items()
                  if k not in ("loans", "transactions")}
 
     # Each thread gets its own LLM instance (connection)
@@ -323,7 +325,7 @@ def compute_metrics(state: AgentState) -> dict:
 
     # ── Submit all metric groups to thread pool in parallel ────────────
     log_info(AGENT, f"Submitting {len(METRIC_PROMPTS)} metric groups for PARALLEL computation...")
-    with ThreadPoolExecutor(max_workers=len(METRIC_PROMPTS)) as executor:
+    with ThreadPoolExecutor(max_workers=min(3, len(METRIC_PROMPTS))) as executor:
         future_to_key = {}
         for metric_key, (metric_name, prompt_template) in METRIC_PROMPTS.items():
             future = executor.submit(
@@ -506,9 +508,9 @@ def _retry_with_fix(llm, prompt_template, schema_text, original_code,
             log_info(agent_name, f"Executing fixed code (attempt {attempt}/3, {len(fixed_code)} chars)...")
 
             exec_namespace = {
-                "loans_df": loans_df.copy() if loans_df is not None else None,
-                "txns_df": txns_df.copy() if txns_df is not None else None,
-                "extra_dfs": {k: v.copy() for k, v in extra_dfs.items()},
+                "loans_df": loans_df,
+                "txns_df": txns_df,
+                "extra_dfs": extra_dfs,
                 "pd": pd,
                 "np": np,
                 "datetime": datetime,
