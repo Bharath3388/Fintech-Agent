@@ -32,7 +32,7 @@ function MessageBubble({ msg }) {
   );
 }
 
-export default function ChatSidebar({ sessionId, open, onToggle }) {
+export default function ChatSidebar({ sessionId, open, onToggle, authToken }) {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -71,7 +71,10 @@ export default function ChatSidebar({ sessionId, open, onToggle }) {
     try {
       const resp = await fetch(`${BACKEND}/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify({ session_id: sessionId, question, history }),
       });
 

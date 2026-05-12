@@ -1,15 +1,38 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import UploadArea from './components/UploadArea';
 import ProgressTracker from './components/ProgressTracker';
 import ResultsDashboard from './components/ResultsDashboard';
 import ChatSidebar from './components/ChatSidebar';
-import { Activity } from 'lucide-react';
+import AuthPage from './components/AuthPage';
+import { Activity, LogOut } from 'lucide-react';
 
 const API = '/api';
 // SSE requires direct connection — Vite's proxy buffers streaming responses
 const BACKEND = 'http://localhost:8000';
 
+// ── Auth helpers ──────────────────────────────────────────────────────────
+function getStoredAuth() {
+  try {
+    const raw = localStorage.getItem('auth');
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+
+function storeAuth(auth) {
+  localStorage.setItem('auth', JSON.stringify(auth));
+}
+
+function clearAuth() {
+  localStorage.removeItem('auth');
+}
+
+function authHeaders(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
 export default function App() {
+  const [auth, setAuth] = useState(getStoredAuth);
   const [files, setFiles] = useState([]);
   const [csvPaths, setCsvPaths] = useState([]);
   const [phase, setPhase] = useState('upload'); // upload | running | done
@@ -35,14 +58,19 @@ export default function App() {
     selectedFiles.forEach(f => formData.append('files', f));
 
     try {
-      const resp = await fetch(`${API}/upload`, { method: 'POST', body: formData });
+      const resp = await fetch(`${API}/upload`, {
+        method: 'POST',
+        headers: authHeaders(auth?.token),
+        body: formData,
+      });
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
       setCsvPaths(data.csv_paths);
     } catch (e) {
+      if (e.message.includes('401')) { handleLogout(); return; }
       setError(`Upload failed: ${e.message}`);
     }
-  }, []);
+  }, [auth]);
 
   const handleSSEEvent = useCallback((event) => {
     // Skip Orchestrator for stage tracking (it fires first/last, not a real pipeline stage)
@@ -132,7 +160,10 @@ export default function App() {
     try {
       const resp = await fetch(`${BACKEND}/analyze/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(auth?.token),
+        },
         body: JSON.stringify({ csv_paths: csvPaths }),
       });
 
@@ -193,7 +224,7 @@ export default function App() {
       setError(`Connection error: ${e.message}`);
       setPhase('upload');
     }
-  }, [csvPaths, handleSSEEvent]);
+  }, [csvPaths, handleSSEEvent, auth]);
 
   const handleReset = useCallback(() => {
     setFiles([]);
@@ -208,6 +239,22 @@ export default function App() {
     setChatOpen(false);
   }, []);
 
+  const handleAuth = useCallback((authData) => {
+    setAuth(authData);
+    storeAuth(authData);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearAuth();
+    setAuth(null);
+    handleReset();
+  }, [handleReset]);
+
+  // If not authenticated, show login/signup
+  if (!auth) {
+    return <AuthPage onAuth={handleAuth} />;
+  }
+
   return (
     <div className="app-container">
       <header className="app-header">
@@ -215,6 +262,12 @@ export default function App() {
         <div>
           <h1>Fintech Loan Portfolio Agent</h1>
           <p className="subtitle">AI-Powered Analytics </p>
+        </div>
+        <div className="header-user">
+          <span className="header-username">{auth.username}</span>
+          <button className="btn-logout" onClick={handleLogout} title="Logout">
+            <LogOut size={16} /> Logout
+          </button>
         </div>
       </header>
 
@@ -256,6 +309,7 @@ export default function App() {
               sessionId={sessionId}
               open={chatOpen}
               onToggle={() => setChatOpen(o => !o)}
+              authToken={auth?.token}
             />
           )}
         </div>

@@ -18,7 +18,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
@@ -32,6 +32,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agentic.graph import run_pipeline
 from agentic.agent_chat import answer_question
+from auth import (
+    init_db, signup_user, login_user, get_current_user,
+    SignupRequest, LoginRequest, AuthResponse,
+)
 
 # ── In-memory session store (pipeline results keyed by session_id) ─────────
 # Stores the serialised result dict so the chat agent can reference it later.
@@ -55,6 +59,9 @@ app.add_middleware(
 
 # Pipeline runs are CPU/IO heavy — use a thread pool so the event loop stays free
 _executor = ThreadPoolExecutor(max_workers=2)
+
+# Initialize user database on startup
+init_db()
 
 # Upload directory for CSV files
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
@@ -108,6 +115,22 @@ def _serialize(data: Any) -> Any:
     return json.loads(json.dumps(data, cls=_SafeEncoder))
 
 
+# ── Auth Routes ────────────────────────────────────────────────────────────
+@app.post("/signup", response_model=AuthResponse)
+def signup(req: SignupRequest):
+    return signup_user(req)
+
+
+@app.post("/login", response_model=AuthResponse)
+def login(req: LoginRequest):
+    return login_user(req)
+
+
+@app.get("/me")
+def me(user: dict = Depends(get_current_user)):
+    return user
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse)
 def health():
@@ -120,7 +143,7 @@ def health():
 
 
 @app.post("/analyze")
-async def analyze(request: AnalyzeRequest):
+async def analyze(request: AnalyzeRequest, user: dict = Depends(get_current_user)):
     # ── Validate paths before handing off to the agent ────────────────
     bad = [p for p in request.csv_paths if not os.path.isfile(p)]
     if bad:
@@ -233,7 +256,7 @@ async def analyze(request: AnalyzeRequest):
 
 # ── File Upload ────────────────────────────────────────────────────────────
 @app.post("/upload")
-async def upload_files(files: list[UploadFile] = File(...)):
+async def upload_files(files: list[UploadFile] = File(...), user: dict = Depends(get_current_user)):
     """Upload CSV files and return their saved paths."""
     session_id = uuid.uuid4().hex[:8]
     session_dir = os.path.join(UPLOAD_DIR, session_id)
@@ -253,7 +276,7 @@ async def upload_files(files: list[UploadFile] = File(...)):
 
 # ── SSE Streaming Endpoint ─────────────────────────────────────────────────
 @app.post("/analyze/stream")
-async def analyze_stream(request: AnalyzeRequest):
+async def analyze_stream(request: AnalyzeRequest, user: dict = Depends(get_current_user)):
     """Run the pipeline and stream progress via Server-Sent Events."""
     bad = [p for p in request.csv_paths if not os.path.isfile(p)]
     if bad:
@@ -331,7 +354,7 @@ async def analyze_stream(request: AnalyzeRequest):
 
 # ── Chat Endpoint ─────────────────────────────────────────────────────────
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     """Answer a natural-language question about the analysed portfolio."""
     state = _session_store.get(request.session_id)
     if not state:
